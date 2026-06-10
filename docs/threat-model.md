@@ -5,17 +5,33 @@ Status: draft.
 ## Scope
 
 Quoru is the durable conversation runtime for multi-agent systems.
-This document covers concerns relevant to multi-agent collaboration
-within a single trust boundary (one organization, or one operator's
-fleet). Cross-organization trust establishment is the transport's
-responsibility, not Quoru's.
+Conversations live inside a single Quoru daemon's trust boundary;
+[`federation.md`](federation.md) describes how conversations span
+multiple daemons through bridged participation.
+
+This document covers two scopes:
+
+- **Single-daemon scope.** Concerns within one Quoru daemon's trust
+  boundary (one organization, or one operator's fleet). This was
+  the original scope and remains the bulk of the threat surface.
+- **Federation scope.** Concerns introduced when a daemon bridges to
+  a peer daemon under different operational control. The bridge is
+  the explicit trust boundary; each side's threat model continues to
+  apply within itself, plus new threats arise at the bridge.
+
+Identity establishment within a daemon is still delegated to the
+transport. Federation does not change that — each daemon issues
+principals in its own trust boundary; bridges consume foreign
+identity assertions but do not issue them.
 
 ## In scope
 
-- Conversation-scoped authorization: who can send which event at which
-  state of a given conversation.
-- Authority chain: every step records who acted, on what evidence, with
-  what claim.
+Single-daemon:
+
+- Conversation-scoped authorization: who can send which event at
+  which state of a given conversation.
+- Authority chain: every step records who acted, on what evidence,
+  with what claim.
 - Recursion and budget control: hop count, path record,
   per-conversation token cap.
 - Schema enforcement at the conversation boundary: events that don't
@@ -24,13 +40,27 @@ responsibility, not Quoru's.
 - Replay correctness: deterministic re-execution against the durable
   log.
 
+Federation:
+
+- Bridge contract integrity: bridged events carry verifiable foreign
+  identity, cross-log references are tamper-evident, foreign
+  participants are scoped to roles their bridge declaration admits.
+- Cross-boundary confidentiality: gossip propagates only declared
+  capability metadata, not active conversation state.
+- Peer authentication: a daemon claiming to be peer X must
+  authenticate as peer X under the configured trust mode.
+
 ## Out of scope
 
-- Peer-org snooping (single-trust-boundary product).
 - Byzantine transports.
 - Covert-channel hardening.
-- Identity establishment (delegated to transport).
-- Routing-layer access control (delegated to AGP or transport).
+- Identity establishment within a daemon (delegated to transport).
+- The matching / discovery / routing layer between peers (delegated;
+  see [`federation.md`](federation.md) — Quoru consumes matched
+  peers from a pluggable matcher).
+- Pack distribution security (how packs get installed on a peer is
+  the operator's responsibility; bridges fail closed if the peer
+  doesn't have the required pack).
 
 ## Threats
 
@@ -67,6 +97,22 @@ downstream policy engines) treat it as ground truth.
   behalf of role R") that the conversation machine did not grant it
   in the current state. State-machine admission must check claim
   against the state's grant set, not just event schema.
+- **A6. Ship-gate forgery or premature clearance.** A workflow gate
+  set by `<pack>.ship(gate-on=...)` (per
+  [`pack-contract.md` § Cross-team intents](pack-contract.md#cross-team-intents))
+  is cleared by an event whose actor was not authorized to clear it —
+  e.g., a local participant emits a synthetic `deliverable-completed`
+  event without the cross-team origin reference, or a foreign
+  participant clears a gate they had no part in. Conversely, a
+  malicious participant sets a spurious gate to indefinitely block
+  legitimate follow-on work. Runtime must require gate-set events
+  to originate from the ship event's authority chain (only the role
+  that called `ship` can attach a `gate-on`); gate-clearance events
+  must carry an origin reference matching the gate's declared
+  external dependency (i.e., the cross-team request the gate was
+  waiting on). A `gate-override` verb exists for the local techlead
+  to clear a gate manually, but it is its own authority-chained verb
+  and audit-distinct from a real gate-clearance.
 
 ### Replay correctness
 
@@ -172,10 +218,151 @@ a single conversation can fan out unboundedly.
   per-actor consumption so one actor cannot exhaust a shared
   budget.
 
+### Federation
+
+Federation introduces a new threat surface at the bridge. The
+single-daemon threats above still apply within each side; the
+threats below are specifically those that exist *because* two
+daemons under different operational control are exchanging events.
+
+- **F1. Foreign principal impersonation.** A peer claims a foreign
+  principal/role binding that the peer cannot actually substantiate
+  (no corresponding join event on their side). Bridge events must
+  carry a verifiable reference into the peer's log; receiver must
+  refuse bridge events whose claimed binding is not backed by an
+  inspectable join event on the peer side.
+- **F2. Bridge event spoofing.** A third party with network reach
+  injects bridge events tagged as coming from a configured peer.
+  Peer authentication (mTLS, IdP, or shared CA — whichever trust
+  mode is configured) must be applied to every bridge event, not
+  just to bridge setup.
+- **F3. Role-mapping evasion.** A peer sends events that the local
+  bridge declaration's `admissible-events` list does not permit, in
+  states the declaration does not allow. Admission must check the
+  bridge declaration as strictly as it checks intra-daemon role
+  grants — foreign actors get *exactly* the surface their bridge
+  declaration grants, no more.
+- **F4. Cross-conversation bridge replay.** A bridge event valid
+  in bridge instance B1 is replayed as if it belonged to a
+  different bridge instance B2. Bridge event references must include
+  the bridge-instance identity (peer-id, peer-conv-id, peer-event-id,
+  content-hash); admission rejects mismatched references.
+- **F5. Gossip pollution.** A peer advertises capabilities or peer
+  references that mislead recipients (claims to handle events it
+  cannot, points at peers that do not exist or are hostile).
+  Gossip-accepted information must be marked as advisory; matchers
+  must verify capability claims when bridges are actually attempted,
+  not trust gossip alone.
+- **F6. Confidentiality leak via gossip.** Gossip is configured
+  loosely and ends up propagating information about active
+  conversations, participants, or even payload fragments. Gossip
+  payload schema must be a closed vocabulary that admits only
+  capability metadata; active conversation state has no gossip
+  representation.
+- **F7. Federated DoS via bridge fan-out.** An adversarial workflow
+  emits many `BridgeRequested` events to exhaust local matcher
+  bandwidth or to amplify against a peer. Per-conversation and
+  per-tenant rate limits on bridge requests; matcher must apply
+  back-pressure rather than blocking the local conversation.
+- **F8. Confused-deputy across bridge.** A foreign participant in
+  `conv_A` causes the local daemon to take an action against a
+  third party that the foreign participant could not have taken
+  directly (e.g., causes `conv_A` to bridge to a peer the foreign
+  side could not reach itself). Bridge invitations originating from
+  foreign-participant-driven transitions must be marked as such in
+  the authority chain; receivers can refuse bridges whose chain
+  shows foreign causation if their policy requires it.
+- **F9. Trust mode downgrade.** A configured peer initially
+  authenticates via mTLS, then a man-in-the-middle convinces the
+  daemon to accept a weaker mode for subsequent events. Peer trust
+  mode must be pinned per-peer at config time; downgrade is not a
+  runtime choice.
+- **F10. Cross-log audit unavailability.** Audit walking a bridge
+  requires asking the peer for referenced events; if the peer
+  refuses or is offline, audit cannot complete. Each side should
+  optionally cache enough of the peer's referenced events
+  (signed/hashed by the peer) to allow audit without live peer
+  cooperation. Out of v1 if too expensive; document as a known
+  limitation.
+- **F11. Reverse-direction admission overreach.** Bridges are
+  bidirectional once established (see
+  [`federation.md` § Bidirectional, not directional](federation.md#bidirectional-not-directional)).
+  A peer may attempt to send events back that the originating pack's
+  bridge declaration does not list as admissible-from-peer — for
+  example, the peer attempts to inject an `<pack>.carve` event over
+  a bridge originally opened for an `intake-request`, expecting it
+  to ride the established channel. Admission must check
+  direction-typed admissible-events lists; events arriving from a
+  peer are matched only against the local side's
+  "events I admit from peer" list, never against the verbs the
+  local side calls outward. The two directions are independent
+  contracts.
+- **F12. Clarification loop amplification.** A peer floods the
+  bridge with `<pack>.request-clarification` events to amplify load
+  on the local side, or drives infinite clarification ping-pong by
+  always responding with another question. Pack-declared
+  `max-clarification-rounds` cap must be enforced by admission;
+  on exceeded, the workflow transitions to a `NeedsHumanTriage`
+  state surfaced on the control tower and the auto-clarify path
+  is closed for that conversation. Per-peer rate limits apply to
+  clarification requests independently of bridge-setup limits.
+- **F13. Cross-team verb authority confusion.** A peer calls an
+  internal verb (e.g., `<pack>.carve`, gated to local techlead)
+  hoping the cross-team channel grants it elevated authority. The
+  paired-verb pattern requires that internal verbs and cross-team
+  intake verbs are distinct entries in the manifest with distinct
+  capabilities; bridge admission must refuse to admit any event
+  whose verb is not declared `cross-team = true` in the local
+  manifest, even if the peer has a bridge open.
+
+### Control tower integrity
+
+The dashboard is the human's authority surface — humans take
+actions through it and trust it as the truthful display of
+conversation state. Its integrity is a class of threats distinct
+from authority/schema/replay. See
+[`architecture.md` § UI and BFF](architecture.md#ui-and-bff) for
+the control-tower requirements.
+
+- **C1. Spoofed action button.** A pack-contributed slot renders
+  content designed to mimic a host action (e.g., a button that
+  looks like "Approve design" but actually invokes a different
+  verb). Host shell must own the canonical action surface (approve,
+  sign-off, ship, etc.); pack-contributed widgets cannot render
+  host-shaped action buttons, only their declared widget types
+  (table, timeline, form, etc.) from the slot DSL vocabulary in
+  [`pack-distribution.md`](pack-distribution.md). Action buttons
+  rendered by the host always display the workflow + verb they
+  will invoke as visible provenance.
+- **C2. Dashboard staleness during stall.** A conversation has
+  stalled but the dashboard caches an old state and appears
+  active. With no SLAs (per
+  [`federation.md` § Stall visibility](federation.md#stall-visibility-no-slas)),
+  humans rely on the dashboard to *see* stalls — staleness defeats
+  detection. Dashboard must show "last activity" timestamps
+  prominently on every conversation and assignment row, derived
+  from engine state (not cached), and must refresh on engine-state
+  change without requiring agent connectivity.
+- **C3. Pending-on-you queue starvation.** A noisy pack floods the
+  human's pending queue with low-importance assignments, drowning
+  out high-stakes ones (approve-design, signoff-release, accept-
+  intake). Pack-declared importance hints are advisory; the host
+  shell controls grouping, ordering, and surfacing. High-stakes
+  human-typed-role assignments (the ones in the pack's human
+  touchpoint inventory) get host-defined prominence regardless of
+  pack-supplied hints.
+- **C4. UI authority drift.** UI-originated events bypass the
+  daemon's admission path (e.g., a renderer bug causes direct
+  state mutation). UI must always go through the native API; the
+  authority chain treats UI-originated events identically to
+  CLI- and agent-originated events. Any UI render path that
+  modifies engine state without an admission round-trip is a
+  runtime bug, not a feature.
+
 ## Open questions
 
-Each item below is a question the pack contract must answer before
-the corresponding threats can be made precise.
+Each item below is a question the pack contract or federation design
+must answer before the corresponding threats can be made precise.
 
 - **Actor binding.** How does the runtime map a transport-supplied
   principal to a pack-declared role at conversation join? (Blocks
@@ -195,6 +382,25 @@ the corresponding threats can be made precise.
 - **Internal-event declaration.** Are runtime-originated events
   (errors, timeouts, cancellations) part of the pack manifest or a
   fixed runtime vocabulary? (Blocks S6.)
+- **Cached peer-event audit.** Should each side cache signed copies
+  of referenced peer events to allow audit without live peer
+  cooperation? Cost/value tradeoff unclear pre-deployment. (Blocks
+  F10.)
+- **Foreign-causation marking.** What exactly does the authority
+  chain record when a bridge invitation is caused by a foreign
+  participant's actions? (Blocks F8.)
+- **Gate-clearance authority.** Which roles can clear a
+  `<pack>.ship` gate? Working assumption: only an event whose
+  origin reference matches the gate's declared external dependency
+  (closing it normally), or a local-techlead-issued `gate-override`
+  (closing it explicitly with audit trail). (Blocks A6.)
+- **Max-clarification-rounds ceiling.** Pack declares its own cap,
+  but should there be a runtime ceiling above which the daemon
+  refuses regardless of pack value? Likely yes (prevents a hostile
+  pack from declaring 10^6 rounds). Value TBD. (Blocks F12.)
+- **Slot action provenance display.** What's the canonical visible
+  provenance for a host-rendered action button (just the verb name,
+  or verb + pack + workflow)? (Blocks C1.)
 
 ## Recommended resolutions
 
@@ -237,7 +443,19 @@ re-checked.
   within each scope is what defeats B6.
 - **Internal events → fixed runtime vocabulary, declared, not
   extensible.** Runtime ships a closed set (`Timeout`, `Cancel`,
-  `Error`, `BudgetExhausted`, `JoinComplete`, ...). Packs may
-  write transitions that handle these events but may not redefine
-  or extend the set. Open extension would let pack authors shadow
-  runtime behavior.
+  `Error`, `BudgetExhausted`, `JoinComplete`, `BridgeRequested`,
+  `BridgeAccepted`, `BridgeRejected`, `BridgeEvent`, ...). Packs
+  may write transitions that handle these events but may not
+  redefine or extend the set. Open extension would let pack
+  authors shadow runtime behavior.
+- **Cached peer-event audit → deferred to v2.** v1 audit requires
+  live peer cooperation. Document the limitation; revisit once
+  real audit workflows exist and the storage cost of cached
+  peer events can be sized. Mitigation in v1: peers that go
+  offline permanently are a known audit-availability hazard.
+- **Foreign-causation marking → authority-chain field.** The
+  authority chain entry for any event admitted because of a
+  bridge transition carries a `caused-by-bridge = <bridge-id>`
+  marker. Downstream policy (including receiving peers) can choose
+  to refuse actions whose chain shows foreign causation. Cheap to
+  record; expensive enforcement is operator policy, not runtime.

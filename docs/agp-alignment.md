@@ -9,9 +9,11 @@ authority audit, saga compensation, and conversation-scoped authorization.
 
 ## Alignment without dependency
 
-Quoru is transport-agnostic by design. AGP is one of several supported
-transports (alongside MCP, A2A, and plain HTTP). Quoru consumes whatever
-identity assertion the transport produces and adds its own
+Quoru is transport-agnostic by design. MCP is the default agent
+transport — the daemon ships an MCP server so LLM agents (Claude,
+etc.) can connect with zero custom client code. AGP, A2A, and plain
+HTTP are also supported via the daemon's native API. Quoru consumes
+whatever identity assertion the transport produces and adds its own
 conversation-level authz on top.
 
 ## Non-overlap rules

@@ -12,19 +12,38 @@ they move bytes between agents; Quoru owns the conversation lifecycle.
 
 ## Status
 
-Design phase. The threat model (`docs/threat-model.md`) and architecture
-spec (`docs/architecture.md`) are the current deliverables. Initial release
-will include the runtime, SDK, CLI, and a coordination pack as the first
-reference conversation pattern.
+Design phase. Current deliverables: architecture (`docs/architecture.md`),
+pack contract (`docs/pack-contract.md`), federation
+(`docs/federation.md`), pack distribution & safety
+(`docs/pack-distribution.md`), threat model (`docs/threat-model.md`),
+user journeys (`docs/user-journeys.md`), scope (`docs/scope.md`),
+reference packs (`docs/packs/`), and use cases (`docs/use-cases/`).
+Initial release will include the runtime, SDK, CLI, and a
+separately-distributed reference packs repo with the **`eng` team
+pack** as the first reference (see `docs/packs/eng.md`).
 
 ## Architecture
 
-- **Quoru Runtime** — the durable conversation engine. Small, stable
-  API, slow-changing.
-- **Quoru Pack** — distributable bundle (conversation state machines +
-  worker code + manifest). The unit of evolution. Coordination is a
-  pack. SRE is a pack. Review is a pack.
-- **Conversation** — a running instance driven by a pack.
+Quoru is a daemon that hosts durable multi-agent conversations.
+Conversations are [Fuse](https://github.com/convov/fuse) workflows;
+pack-shipped workers perform side effects; external agents drive the
+conversation over MCP.
+
+- **Quoru Runtime** — the daemon. Embeds Fuse for durable execution,
+  supervises pack workers, exposes a native API and an MCP server.
+- **Quoru Pack** — distributable bundle of `.fuse` workflows and
+  entities + worker code + a manifest declaring the contract. The
+  unit of evolution. A pack defines a **team**: a set of roles
+  (agent and human), the verbs that team can perform, and the
+  workflows that coordinate them. Engineering is a pack. SRE is a
+  pack. Compliance is a pack.
+- **Conversation** — a running instance of a pack's entry workflow.
+  Pinned to the pack version it started under.
+
+Quoru is layered over Fuse and would in principle reuse a *Fuse App
+SDK* (not yet extracted) for the daemon scaffolding, pack format, and
+work-queue primitives that any Fuse-powered domain app would need.
+See `docs/architecture.md` for the tier model.
 
 Quoru aligns with the AGNTCY Agent Gateway Protocol (AGP) without
 duplicating its surface: AGP handles transport-level identity, routing,
