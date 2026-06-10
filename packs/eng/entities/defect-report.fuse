@@ -1,0 +1,87 @@
+# defect-report.fuse — DefectReport entity for the eng pack.
+#
+# Opened by `qa` (eng.report-defect) when a TestRun fails or a
+# manual inspection finds a defect. Triaged + resolved by `dev` /
+# `qa`. Lives independently of any single TestRun — one defect
+# may be observed across many runs and resolved by one code
+# change.
+#
+# Lifecycle: OPENED -> ACKNOWLEDGED -> RESOLVED. Side terminals:
+# DUPLICATE (closed as dupe of another defect), WORKS_AS_DESIGNED
+# (closed as not-a-bug).
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity DefectReport v1 {
+  @order(defect_id, state, severity, subject, reporter_id, assignee_id, opened_at)
+
+  data {
+    defect_id: ID @key @display(name: "Defect ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    milestone_id: ID? @display(name: "Milestone", format: "id", readonly) @nav(view: "milestone.detail", label: "Milestone") @group("content")
+    observed_in_run_id: ID? @display(name: "Observed in run", format: "id", readonly) @nav(view: "test-run.detail", label: "Run") @group("content")
+    severity: String @display(name: "Severity") @validate(regex: "^(blocker|critical|major|minor|trivial)$", message: "severity must be blocker / critical / major / minor / trivial") @group("triage")
+    repro_steps: String? @display(name: "Reproduction steps") @group("content")
+    expected_behavior: String? @display(name: "Expected behavior") @group("content")
+    actual_behavior: String? @display(name: "Actual behavior") @group("content")
+    reporter_id: ID @display(name: "Reporter", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    assignee_id: ID? @display(name: "Assignee", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    fix_change_id: ID? @display(name: "Fix change", format: "id", readonly) @nav(view: "code-change.detail", label: "Change") @group("resolution")
+    duplicate_of_id: ID? @display(name: "Duplicate of", format: "id", readonly) @nav(view: "defect-report.detail", label: "Defect") @group("resolution")
+    resolution_notes: String? @writable @display(name: "Resolution notes") @group("resolution")
+    opened_at: Timestamp @display(name: "Opened", format: "timestamp", readonly) @group("lifecycle")
+    acknowledged_at: Timestamp? @display(name: "Acknowledged", format: "timestamp", readonly) @group("lifecycle")
+    resolved_at: Timestamp? @display(name: "Resolved", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  OPENED {
+    Open(defect_id: ID, subject: String, severity: String, reporter_id: ID) -> OPENED
+      writes {
+        defect_id = defect_id
+        subject = subject
+        severity = severity
+        reporter_id = reporter_id
+        state = "OPENED"
+        opened_at = now()
+      }
+
+    Acknowledge(assignee_id: ID) -> ACKNOWLEDGED
+      writes {
+        assignee_id = assignee_id
+        state = "ACKNOWLEDGED"
+        acknowledged_at = now()
+      }
+
+    MarkDuplicate(duplicate_of_id: ID) -> DUPLICATE
+      writes {
+        duplicate_of_id = duplicate_of_id
+        state = "DUPLICATE"
+        resolved_at = now()
+      }
+
+    MarkWorksAsDesigned(resolution_notes: String) -> WORKS_AS_DESIGNED
+      writes {
+        resolution_notes = resolution_notes
+        state = "WORKS_AS_DESIGNED"
+        resolved_at = now()
+      }
+  }
+
+  ACKNOWLEDGED {
+    Resolve(fix_change_id: ID, resolution_notes: String) -> RESOLVED
+      writes {
+        fix_change_id = fix_change_id
+        resolution_notes = resolution_notes
+        state = "RESOLVED"
+        resolved_at = now()
+      }
+  }
+
+  RESOLVED { }
+  DUPLICATE { }
+  WORKS_AS_DESIGNED { }
+}

@@ -1,0 +1,77 @@
+# decider-engagement.fuse — decider (human) persona engagement workflow.
+#
+# One instance per StrategyDecision awaiting a commit. The decider
+# is a human role: they receive the strategist's draft, review it,
+# and either commit a chosen option or withdraw.
+#
+# No acts_on — the StrategyDecision entity is owned by the
+# strategist engagement; this engagement just models the human's
+# review-and-commit lifecycle so it shows up in the audit chain
+# with timestamps + identity.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete COMMITTED  -> StrategyCommittedByHuman
+#              fail     WITHDRAWN  -> StrategyWithdrawnByHuman
+
+package quoru.packs.eng
+
+use std.test v1
+
+workflow decider_engagement v1 {
+
+  events {
+    StrategyDrafted    { decision_id: ID, decider_id: ID, options_ref: String, recommended_option: String }
+    StartReview        { }
+    CommitDecision     { chosen_option: String, commit_rationale: String }
+    WithdrawDecision   { withdrawal_reason: String }
+  }
+
+  data {
+    decision_id        : ID?
+    decider_id         : ID?
+    options_ref        : String?
+    recommended_option : String?
+    chosen_option      : String?
+    commit_rationale   : String?
+    withdrawal_reason  : String?
+  }
+
+  AWAITING_DRAFT {
+    StrategyDrafted -> AWAITING_REVIEW
+      capture decision_id
+      capture decider_id
+      capture options_ref
+      capture recommended_option
+  }
+
+  AWAITING_REVIEW {
+    StartReview -> REVIEWING
+  }
+
+  REVIEWING {
+    CommitDecision -> COMMITTED
+      capture chosen_option
+      capture commit_rationale
+    WithdrawDecision -> WITHDRAWN
+      capture withdrawal_reason
+  }
+
+  terminal COMMITTED, WITHDRAWN
+
+  test "decider receives draft, reviews, commits" {
+    given submit { decision_id: "sd_1", decider_id: "dc_eric", options_ref: "/docs/strategy/durability-options.md", recommended_option: "WAL-backed" }
+    when StartReview { }
+    when CommitDecision { chosen_option: "WAL-backed", commit_rationale: "matches existing infra investment" }
+    expect state == COMMITTED
+    expect data.chosen_option == "WAL-backed"
+    expect data.commit_rationale == "matches existing infra investment"
+  }
+
+  test "decider receives draft, withdraws" {
+    given submit { decision_id: "sd_2", decider_id: "dc_eric", options_ref: "/docs/strategy/dep-options.md", recommended_option: "soft-deprecate" }
+    when StartReview { }
+    when WithdrawDecision { withdrawal_reason: "scope no longer applies" }
+    expect state == WITHDRAWN
+    expect data.withdrawal_reason == "scope no longer applies"
+  }
+}

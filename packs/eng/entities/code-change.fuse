@@ -1,0 +1,108 @@
+# code-change.fuse — CodeChange entity for the eng pack.
+#
+# A unit of code modification opened by a `dev` (eng.propose),
+# reviewed by another `dev` (eng.review), merged + deployed
+# (eng.merge / eng.deploy). The audit chain is the PR equivalent
+# but stored as a first-class entity so the conversation can
+# reason about it.
+#
+# Lifecycle: PROPOSED -> IN_REVIEW -> APPROVED -> MERGED -> DEPLOYED.
+# ABANDONED is the closed-not-merged terminal; REJECTED is "review
+# said no."
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity CodeChange v1 {
+  @order(change_id, state, subject, author_id, reviewer_id, milestone_id)
+
+  data {
+    change_id: ID @key @display(name: "Change ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    milestone_id: ID @display(name: "Milestone", format: "id", readonly) @nav(view: "milestone.detail", label: "Milestone") @group("content")
+    diff_ref: String? @display(name: "Diff location", hint: "URL or repo path to the diff / PR") @group("content")
+    author_id: ID @display(name: "Author", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    reviewer_id: ID? @display(name: "Reviewer", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    review_verdict: String? @display(name: "Review verdict") @validate(regex: "^(approve|reject|request-changes)$", message: "verdict must be approve / reject / request-changes") @group("decision")
+    review_rationale: String? @writable @display(name: "Review rationale") @group("decision")
+    merger_id: ID? @display(name: "Merged by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    deployer_id: ID? @display(name: "Deployed by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    deploy_ref: String? @display(name: "Deploy artifact", hint: "Build/deploy artifact ref") @group("content")
+    rejection_reason: String? @writable @display(name: "Rejection reason") @group("lifecycle")
+    abandonment_reason: String? @writable @display(name: "Abandonment reason") @group("lifecycle")
+    proposed_at: Timestamp @display(name: "Proposed", format: "timestamp", readonly) @group("lifecycle")
+    reviewed_at: Timestamp? @display(name: "Reviewed", format: "timestamp", readonly) @group("lifecycle")
+    merged_at: Timestamp? @display(name: "Merged", format: "timestamp", readonly) @group("lifecycle")
+    deployed_at: Timestamp? @display(name: "Deployed", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  PROPOSED {
+    Propose(change_id: ID, subject: String, milestone_id: ID, diff_ref: String, author_id: ID) -> PROPOSED
+      writes {
+        change_id = change_id
+        subject = subject
+        milestone_id = milestone_id
+        diff_ref = diff_ref
+        author_id = author_id
+        state = "PROPOSED"
+        proposed_at = now()
+      }
+
+    StartReview(reviewer_id: ID) -> IN_REVIEW
+      writes {
+        reviewer_id = reviewer_id
+        state = "IN_REVIEW"
+      }
+  }
+
+  IN_REVIEW {
+    Approve(review_rationale: String) -> APPROVED
+      writes {
+        review_verdict = "approve"
+        review_rationale = review_rationale
+        state = "APPROVED"
+        reviewed_at = now()
+      }
+
+    Reject(rejection_reason: String) -> REJECTED
+      writes {
+        review_verdict = "reject"
+        rejection_reason = rejection_reason
+        state = "REJECTED"
+        reviewed_at = now()
+      }
+  }
+
+  APPROVED {
+    Merge(merger_id: ID) -> MERGED
+      writes {
+        merger_id = merger_id
+        state = "MERGED"
+        merged_at = now()
+      }
+  }
+
+  MERGED {
+    Deploy(deployer_id: ID, deploy_ref: String) -> DEPLOYED
+      writes {
+        deployer_id = deployer_id
+        deploy_ref = deploy_ref
+        state = "DEPLOYED"
+        deployed_at = now()
+      }
+  }
+
+  transitions {
+    Abandon(abandonment_reason) : PROPOSED | IN_REVIEW | APPROVED -> ABANDONED {
+      set abandonment_reason = abandonment_reason
+      set state = "ABANDONED"
+    }
+  }
+
+  DEPLOYED { }
+  REJECTED { }
+  ABANDONED { }
+}

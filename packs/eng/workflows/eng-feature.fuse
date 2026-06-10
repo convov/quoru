@@ -1,0 +1,469 @@
+# eng-feature.fuse — comprehensive eng-pack feature orchestrator.
+#
+# One Quoru conversation = one durable feature lifecycle. The
+# orchestrator is the conversation; it spawns persona engagement
+# workflows as submachines at each phase trigger and advances on
+# their outcome events:
+#
+#   StartResearch       → run ResearcherEngagement   → ResearchSynthesized | ResearchDeclined
+#   StartStrategy       → run StrategistEngagement   → StrategyCommitted   | StrategyWithdrawn
+#   StartDesign         → run ArchitectEngagement    → DesignApproved      | DesignRejected
+#   StartCarve          → run TechleadEngagement     → MilestoneShipped    | MilestoneDrained
+#   StartCodeChange     → run DevEngagement          → CodeChangeDeployed  | CodeChangeRejected
+#   StartTestPlan       → run QaEngagement           → TestPlanReady       | TestPlanAbandoned
+#   StartAudit          → run AuditorEngagement      → AttestationIssued
+#
+# Milestone binding lives in TechleadEngagement (single owner). The
+# three human-only engagements (decider, approver, qa-owner) are not
+# spawned by the orchestrator; they exist standalone and their
+# actions are folded into the strategist / architect / techlead
+# engagement event surfaces. See ../entities/ and the other files
+# in this directory.
+#
+# Stock-Fuse gap the orchestrator can't yet fill: the spawn ↔
+# outcome plumbing is verbose because every phase needs three
+# events (trigger + two outcomes) plus a submachine block. Quoru
+# can lift this into a pack-contract DSL: "phase Research uses
+# researcher with timeout 7d" compiles down to all of it.
+
+package quoru.packs.eng
+
+use std.child v1
+use std.entity v1
+use std.test v1
+
+workflow eng_feature v1 {
+
+  submachine ResearcherEngagement uses researcher_engagement v1 {
+    one {
+      fires CommissionResearch
+      outcomes {
+        complete SYNTHESIZED -> ResearchSynthesized
+        fail     REJECTED    -> ResearchDeclined
+      }
+    }
+  }
+
+  submachine StrategistEngagement uses strategist_engagement v1 {
+    one {
+      fires FrameStrategy
+      outcomes {
+        complete COMMITTED -> StrategyCommitted
+        fail     WITHDRAWN -> StrategyWithdrawn
+      }
+    }
+  }
+
+  submachine ArchitectEngagement uses architect_engagement v1 {
+    one {
+      fires DraftDesign
+      outcomes {
+        complete APPROVED -> DesignApproved
+        fail     REJECTED -> DesignRejected
+      }
+    }
+  }
+
+  submachine TechleadEngagement uses techlead_engagement v1 {
+    one {
+      fires AcceptFeature
+      outcomes {
+        complete SHIPPED -> MilestoneShipped
+        fail     DRAINED -> MilestoneDrained
+      }
+    }
+  }
+
+  submachine DevEngagement uses dev_engagement v1 {
+    one {
+      fires ProposeChange
+      outcomes {
+        complete DEPLOYED  -> CodeChangeDeployed
+        fail     REJECTED  -> CodeChangeRejected
+        fail     ABANDONED -> CodeChangeAbandoned
+      }
+    }
+  }
+
+  submachine QaEngagement uses qa_engagement v1 {
+    one {
+      fires DraftTestPlan
+      outcomes {
+        complete READY     -> TestPlanReady
+        fail     ABANDONED -> TestPlanAbandoned
+      }
+    }
+  }
+
+  submachine AuditorEngagement uses auditor_engagement v1 {
+    one {
+      fires RequestAttestation
+      outcomes {
+        complete ISSUED -> AttestationIssued
+      }
+    }
+  }
+
+  events {
+    # Feature lifecycle triggers (emitted by the techlead actor).
+    StartFeature  { subject: String, originator_id: ID, techlead_id: ID }
+    SkipResearch  { skip_reason: String }
+    SkipStrategy  { skip_reason: String }
+
+    # Phase-trigger events. Each one starts the corresponding
+    # submachine via `run <Engagement> with {...}`.
+    CommissionResearch  { artifact_id: ID, subject: String, requester_id: ID, assignee_id: ID }
+    FrameStrategy       { decision_id: ID, subject: String, options_ref: String, recommended_option: String, drafter_id: ID }
+    DraftDesign         { design_id: ID, subject: String, draft_ref: String, author_id: ID }
+    AcceptFeature       { feature_subject: String, techlead_id: ID }
+    ProposeChange       { change_id: ID, subject: String, milestone_id: ID, diff_ref: String, author_id: ID }
+    DraftTestPlan       { plan_id: ID, subject: String, milestone_id: ID, plan_ref: String, author_id: ID }
+    RequestAttestation  { attestation_id: ID, target_kind: String, target_ref: ID, policy_ref: String, auditor_id: ID }
+
+    # Submachine outcome events. Fired into the parent when the
+    # corresponding submachine reaches the named outcome state.
+    # Field shapes match the child workflow's data fields by name.
+    ResearchSynthesized   { artifact_id: ID, artifact_ref: String, citations: String, summary: String }
+    ResearchDeclined      { artifact_id: ID, rejection_reason: String }
+    StrategyCommitted     { decision_id: ID, chosen_option: String, commit_rationale: String, decider_id: ID }
+    StrategyWithdrawn     { decision_id: ID, withdrawal_reason: String }
+    DesignApproved        { design_id: ID, approver_id: ID, approval_rationale: String }
+    DesignRejected        { design_id: ID, rejection_reason: String }
+    MilestoneShipped      { milestone_id: ID, shipper_id: ID }
+    MilestoneDrained      { milestone_id: ID, drain_reason: String }
+    CodeChangeDeployed    { change_id: ID, deployer_id: ID, deploy_ref: String }
+    CodeChangeRejected    { change_id: ID, rejection_reason: String }
+    CodeChangeAbandoned   { change_id: ID, abandonment_reason: String }
+    TestPlanReady         { plan_id: ID }
+    TestPlanAbandoned     { plan_id: ID, abandonment_reason: String }
+    AttestationIssued     { attestation_id: ID, verdict: String, rationale: String }
+
+    # Drain is an orchestrator-level escape valve at any pre-carve
+    # state. Once the techlead engagement is running, drain flows
+    # through it instead and surfaces as MilestoneDrained.
+    DrainFeature { drain_reason: String, drainer_id: ID }
+  }
+
+  data {
+    subject              : String
+    originator_id        : ID
+    techlead_id          : ID?
+    research_artifact_id : ID?
+    strategy_decision_id : ID?
+    design_id            : ID?
+    milestone_id         : ID?
+    code_change_id       : ID?
+    test_plan_id         : ID?
+    attestation_id       : ID?
+    drain_reason         : String?
+    drainer_id           : ID?
+  }
+
+  NEW {
+    StartFeature -> READY
+      capture subject
+      capture originator_id
+      capture techlead_id
+  }
+
+  READY {
+    CommissionResearch -> RESEARCHING
+      set research_artifact_id = event.artifact_id
+      run ResearcherEngagement with {
+        artifact_id: event.artifact_id,
+        subject: event.subject,
+        requester_id: event.requester_id,
+        assignee_id: event.assignee_id
+      }
+    SkipResearch -> RESEARCH_SKIPPED
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  RESEARCHING {
+    ResearchSynthesized -> RESEARCH_READY
+    ResearchDeclined -> RESEARCH_DECLINED
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  RESEARCH_READY {
+    FrameStrategy -> STRATEGIZING
+      set strategy_decision_id = event.decision_id
+      run StrategistEngagement with {
+        decision_id: event.decision_id,
+        subject: event.subject,
+        options_ref: event.options_ref,
+        recommended_option: event.recommended_option,
+        drafter_id: event.drafter_id
+      }
+    SkipStrategy -> STRATEGY_SKIPPED
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  RESEARCH_DECLINED {
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  RESEARCH_SKIPPED {
+    FrameStrategy -> STRATEGIZING
+      set strategy_decision_id = event.decision_id
+      run StrategistEngagement with {
+        decision_id: event.decision_id,
+        subject: event.subject,
+        options_ref: event.options_ref,
+        recommended_option: event.recommended_option,
+        drafter_id: event.drafter_id
+      }
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  STRATEGIZING {
+    StrategyCommitted -> STRATEGY_READY
+    StrategyWithdrawn -> STRATEGY_WITHDRAWN
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  STRATEGY_READY {
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  STRATEGY_WITHDRAWN {
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  STRATEGY_SKIPPED {
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  DESIGNING {
+    DesignApproved -> DESIGN_READY
+    DesignRejected -> DESIGN_REJECTED
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  DESIGN_REJECTED {
+    DraftDesign -> DESIGNING
+      capture design_id
+      run ArchitectEngagement with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  DESIGN_READY {
+    AcceptFeature -> MILESTONE_OWNED
+      run TechleadEngagement with {
+        feature_subject: event.feature_subject,
+        techlead_id: event.techlead_id
+      }
+    DrainFeature -> DRAINED
+      capture drain_reason
+      capture drainer_id
+  }
+
+  MILESTONE_OWNED {
+    ProposeChange -> CODE_IN_FLIGHT
+      set code_change_id = event.change_id
+      run DevEngagement with {
+        change_id: event.change_id,
+        subject: event.subject,
+        milestone_id: event.milestone_id,
+        diff_ref: event.diff_ref,
+        author_id: event.author_id
+      }
+    DraftTestPlan -> QA_IN_FLIGHT
+      set test_plan_id = event.plan_id
+      run QaEngagement with {
+        plan_id: event.plan_id,
+        subject: event.subject,
+        milestone_id: event.milestone_id,
+        plan_ref: event.plan_ref,
+        author_id: event.author_id
+      }
+    RequestAttestation -> AUDIT_IN_FLIGHT
+      capture attestation_id
+      run AuditorEngagement with {
+        attestation_id: event.attestation_id,
+        target_kind: event.target_kind,
+        target_ref: event.target_ref,
+        policy_ref: event.policy_ref,
+        auditor_id: event.auditor_id
+      }
+    MilestoneShipped -> SHIPPED
+    MilestoneDrained -> DRAINED
+  }
+
+  CODE_IN_FLIGHT {
+    CodeChangeDeployed -> MILESTONE_OWNED
+    CodeChangeRejected -> MILESTONE_OWNED
+    CodeChangeAbandoned -> MILESTONE_OWNED
+    MilestoneShipped -> SHIPPED
+    MilestoneDrained -> DRAINED
+  }
+
+  QA_IN_FLIGHT {
+    TestPlanReady -> MILESTONE_OWNED
+    TestPlanAbandoned -> MILESTONE_OWNED
+    MilestoneShipped -> SHIPPED
+    MilestoneDrained -> DRAINED
+  }
+
+  AUDIT_IN_FLIGHT {
+    AttestationIssued -> MILESTONE_OWNED
+    MilestoneShipped -> SHIPPED
+    MilestoneDrained -> DRAINED
+  }
+
+  terminal SHIPPED, DRAINED
+
+  test "happy path: research → strategy → design → carve → code → qa → attest → ship" {
+    given submit { subject: "ship M-101 conversation durability", originator_id: "tl_alice", techlead_id: "tl_alice" }
+    when CommissionResearch { artifact_id: "ra_1", subject: "prior art on conversation durability", requester_id: "tl_alice", assignee_id: "rs_bob" }
+    when ResearchSynthesized { artifact_id: "ra_1", artifact_ref: "/docs/research/durability.md", citations: "RAFT;Calvin;FoundationDB", summary: "WAL-backed is mainstream" }
+    when FrameStrategy { decision_id: "sd_1", subject: "durability approach", options_ref: "/docs/strategy/durability-options.md", recommended_option: "WAL-backed", drafter_id: "st_diana" }
+    when StrategyCommitted { decision_id: "sd_1", chosen_option: "WAL-backed", commit_rationale: "matches existing infra", decider_id: "dc_eric" }
+    when DraftDesign { design_id: "d_1", subject: "WAL-backed durability", draft_ref: "/docs/design/durability.md", author_id: "ar_fran" }
+    when DesignApproved { design_id: "d_1", approver_id: "ap_greg", approval_rationale: "tradeoffs documented; sound" }
+    when AcceptFeature { feature_subject: "WAL-backed durability impl", techlead_id: "tl_alice" }
+    when ProposeChange { change_id: "cc_1", subject: "wire WAL into engine", milestone_id: "M-101", diff_ref: "/pr/123", author_id: "dev_chris" }
+    when CodeChangeDeployed { change_id: "cc_1", deployer_id: "dev_chris", deploy_ref: "build_42" }
+    when DraftTestPlan { plan_id: "tp_1", subject: "durability tests", milestone_id: "M-101", plan_ref: "/docs/tests/durability.md", author_id: "qa_iris" }
+    when TestPlanReady { plan_id: "tp_1" }
+    when RequestAttestation { attestation_id: "at_1", target_kind: "code-change", target_ref: "cc_1", policy_ref: "/policy/durability.md", auditor_id: "au_kate" }
+    when AttestationIssued { attestation_id: "at_1", verdict: "approve", rationale: "meets policy" }
+    when MilestoneShipped { milestone_id: "M-101", shipper_id: "tl_alice" }
+    expect state == SHIPPED
+    expect data.research_artifact_id == "ra_1"
+    expect data.strategy_decision_id == "sd_1"
+    expect data.design_id == "d_1"
+    expect data.code_change_id == "cc_1"
+    expect data.test_plan_id == "tp_1"
+    expect data.attestation_id == "at_1"
+  }
+
+  test "skip research and strategy, drive design → ship" {
+    given submit { subject: "M-740 trivial deliverable", originator_id: "tl_alice", techlead_id: "tl_alice" }
+    when SkipResearch { skip_reason: "scope is mechanical" }
+    when DraftDesign { design_id: "d_2", subject: "consumer .fuse export", draft_ref: "/docs/design/m740.md", author_id: "ar_fran" }
+    when DesignApproved { design_id: "d_2", approver_id: "ap_greg", approval_rationale: "trivial" }
+    when AcceptFeature { feature_subject: "M-740 deliverable", techlead_id: "tl_alice" }
+    when ProposeChange { change_id: "cc_2", subject: "export", milestone_id: "M-740", diff_ref: "/pr/200", author_id: "dev_chris" }
+    when CodeChangeDeployed { change_id: "cc_2", deployer_id: "dev_chris", deploy_ref: "build_50" }
+    when MilestoneShipped { milestone_id: "M-740", shipper_id: "tl_alice" }
+    expect state == SHIPPED
+  }
+
+  test "drain mid-flow before any engagement runs" {
+    given submit { subject: "exploratory feature", originator_id: "tl_alice", techlead_id: "tl_alice" }
+    when DrainFeature { drain_reason: "scope no longer applies", drainer_id: "tl_alice" }
+    expect state == DRAINED
+    expect data.drain_reason == "scope no longer applies"
+  }
+
+  test "drain after research declined" {
+    given submit { subject: "infeasible feature", originator_id: "tl_alice", techlead_id: "tl_alice" }
+    when CommissionResearch { artifact_id: "ra_x", subject: "X", requester_id: "tl_alice", assignee_id: "rs_bob" }
+    when ResearchDeclined { artifact_id: "ra_x", rejection_reason: "out of scope" }
+    when DrainFeature { drain_reason: "research declined; pivoting", drainer_id: "tl_alice" }
+    expect state == DRAINED
+  }
+
+  test "design rejected then re-drafted then approved" {
+    given submit { subject: "M-555 refactor", originator_id: "tl_alice", techlead_id: "tl_alice" }
+    when SkipResearch { skip_reason: "well-understood" }
+    when DraftDesign { design_id: "d_3a", subject: "v1 refactor design", draft_ref: "/docs/design/m555-v1.md", author_id: "ar_fran" }
+    when DesignRejected { design_id: "d_3a", rejection_reason: "too much surface area for one change" }
+    when DraftDesign { design_id: "d_3b", subject: "v2 refactor design — narrower", draft_ref: "/docs/design/m555-v2.md", author_id: "ar_fran" }
+    when DesignApproved { design_id: "d_3b", approver_id: "ap_greg", approval_rationale: "narrower scope is right" }
+    expect no errors
+    expect state == DESIGN_READY
+    expect data.design_id == "d_3b"
+  }
+
+  test "code change rejected, second proposed and deployed" {
+    given submit { subject: "M-303 needs two attempts", originator_id: "tl_alice", techlead_id: "tl_alice" }
+    when SkipResearch { skip_reason: "small fix" }
+    when DraftDesign { design_id: "d_4", subject: "small design", draft_ref: "/docs/design/m303.md", author_id: "ar_fran" }
+    when DesignApproved { design_id: "d_4", approver_id: "ap_greg", approval_rationale: "ok" }
+    when AcceptFeature { feature_subject: "M-303", techlead_id: "tl_alice" }
+    when ProposeChange { change_id: "cc_3a", subject: "first attempt", milestone_id: "M-303", diff_ref: "/pr/300", author_id: "dev_chris" }
+    when CodeChangeRejected { change_id: "cc_3a", rejection_reason: "needs more tests" }
+    when ProposeChange { change_id: "cc_3b", subject: "second attempt", milestone_id: "M-303", diff_ref: "/pr/301", author_id: "dev_chris" }
+    when CodeChangeDeployed { change_id: "cc_3b", deployer_id: "dev_chris", deploy_ref: "build_303b" }
+    when MilestoneShipped { milestone_id: "M-303", shipper_id: "tl_alice" }
+    expect state == SHIPPED
+    expect data.code_change_id == "cc_3b"
+  }
+}

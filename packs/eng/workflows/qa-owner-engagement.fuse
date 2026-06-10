@@ -1,0 +1,74 @@
+# qa-owner-engagement.fuse — qa-owner (human) persona engagement workflow.
+#
+# One instance per Milestone reaching ready-to-ship. The qa-owner
+# is the named human accountable for release readiness — the third
+# of the three minimum human touchpoints in docs/packs/eng.md.
+# They receive the milestone-ready signal, review the QA evidence
+# (test runs, defects, attestations), and emit signoff or hold.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete SIGNED_OFF  -> ReleaseSignedOff
+#              fail     HELD        -> ReleaseHeld
+
+package quoru.packs.eng
+
+use std.test v1
+
+workflow qa_owner_engagement v1 {
+
+  events {
+    ReadyForSignoff  { milestone_id: ID, qa_owner_id: ID }
+    StartReview      { }
+    Signoff          { signoff_notes: String }
+    Hold             { hold_reason: String }
+    Release          { }
+  }
+
+  data {
+    milestone_id  : ID?
+    qa_owner_id   : ID?
+    signoff_notes : String?
+    hold_reason   : String?
+  }
+
+  AWAITING_READY {
+    ReadyForSignoff -> AWAITING_REVIEW
+      capture milestone_id
+      capture qa_owner_id
+  }
+
+  AWAITING_REVIEW {
+    StartReview -> REVIEWING
+  }
+
+  REVIEWING {
+    Signoff -> SIGNED_OFF
+      capture signoff_notes
+    Hold -> HELD
+      capture hold_reason
+  }
+
+  HELD {
+    Release -> REVIEWING
+  }
+
+  terminal SIGNED_OFF
+
+  test "qa-owner receives ready, reviews, signs off" {
+    given submit { milestone_id: "M-101", qa_owner_id: "qo_jack" }
+    when StartReview { }
+    when Signoff { signoff_notes: "OK to ship" }
+    expect state == SIGNED_OFF
+    expect data.signoff_notes == "OK to ship"
+  }
+
+  test "qa-owner holds, releases, then signs off" {
+    given submit { milestone_id: "M-740", qa_owner_id: "qo_jack" }
+    when StartReview { }
+    when Hold { hold_reason: "outstanding minor defects" }
+    when Release { }
+    when Signoff { signoff_notes: "defects accepted as known issues" }
+    expect state == SIGNED_OFF
+    expect data.signoff_notes == "defects accepted as known issues"
+  }
+}

@@ -1,0 +1,71 @@
+# approver-engagement.fuse — approver (human) persona engagement workflow.
+#
+# One instance per Design awaiting approval. The approver is a
+# human role: they receive the architect's draft, review it, and
+# emit approve or reject. Captures the human review activity in
+# the audit chain with timestamps + identity even though the
+# Design entity itself is owned by the architect engagement.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete APPROVED  -> DesignApprovedByHuman
+#              fail     REJECTED  -> DesignRejectedByHuman
+
+package quoru.packs.eng
+
+use std.test v1
+
+workflow approver_engagement v1 {
+
+  events {
+    DesignDrafted     { design_id: ID, approver_id: ID, draft_ref: String, subject: String }
+    StartReview       { }
+    ApproveDraft      { approval_rationale: String }
+    RejectDraft       { rejection_reason: String }
+  }
+
+  data {
+    design_id          : ID?
+    approver_id        : ID?
+    draft_ref          : String?
+    subject            : String?
+    approval_rationale : String?
+    rejection_reason   : String?
+  }
+
+  AWAITING_DRAFT {
+    DesignDrafted -> AWAITING_REVIEW
+      capture design_id
+      capture approver_id
+      capture draft_ref
+      capture subject
+  }
+
+  AWAITING_REVIEW {
+    StartReview -> REVIEWING
+  }
+
+  REVIEWING {
+    ApproveDraft -> APPROVED
+      capture approval_rationale
+    RejectDraft -> REJECTED
+      capture rejection_reason
+  }
+
+  terminal APPROVED, REJECTED
+
+  test "approver receives draft, reviews, approves" {
+    given submit { design_id: "d_1", approver_id: "ap_greg", draft_ref: "/docs/design/d1.md", subject: "WAL-backed durability" }
+    when StartReview { }
+    when ApproveDraft { approval_rationale: "tradeoffs documented; sound" }
+    expect state == APPROVED
+    expect data.approval_rationale == "tradeoffs documented; sound"
+  }
+
+  test "approver receives draft, reviews, rejects" {
+    given submit { design_id: "d_2", approver_id: "ap_greg", draft_ref: "/docs/design/d2.md", subject: "overscoped" }
+    when StartReview { }
+    when RejectDraft { rejection_reason: "too much surface area for one change" }
+    expect state == REJECTED
+    expect data.rejection_reason == "too much surface area for one change"
+  }
+}

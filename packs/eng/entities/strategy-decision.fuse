@@ -1,0 +1,64 @@
+# strategy-decision.fuse — StrategyDecision entity for the eng pack.
+#
+# Drafted by the `strategist` agent (eng.frame), committed by the
+# `decider` human (eng.decide). The draft/commit split is the
+# pattern wherever an agent proposes and a human accepts; same shape
+# repeats in Design.
+#
+# Lifecycle: DRAFTED -> COMMITTED. WITHDRAWN as a side terminal for
+# drafts that get abandoned.
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity StrategyDecision v1 {
+  @order(decision_id, state, subject, drafter_id, decider_id, decided_at)
+
+  data {
+    decision_id: ID @key @display(name: "Decision ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    options_ref: String? @display(name: "Options doc", hint: "URL or repo path to the strategist's options/positioning draft") @group("content")
+    recommended_option: String? @display(name: "Recommended option") @group("content")
+    chosen_option: String? @display(name: "Chosen option") @group("content")
+    commit_rationale: String? @writable @display(name: "Commit rationale", hint: "Decider's stated reason for committing this option") @group("decision")
+    drafter_id: ID @display(name: "Drafted by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    decider_id: ID? @display(name: "Decided by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    withdrawal_reason: String? @writable @display(name: "Withdrawal reason") @group("lifecycle")
+    drafted_at: Timestamp @display(name: "Drafted", format: "timestamp", readonly) @group("lifecycle")
+    decided_at: Timestamp? @display(name: "Decided", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  DRAFTED {
+    Frame(decision_id: ID, subject: String, options_ref: String, recommended_option: String, drafter_id: ID) -> DRAFTED
+      writes {
+        decision_id = decision_id
+        subject = subject
+        options_ref = options_ref
+        recommended_option = recommended_option
+        drafter_id = drafter_id
+        state = "DRAFTED"
+        drafted_at = now()
+      }
+
+    Commit(chosen_option: String, commit_rationale: String, decider_id: ID) -> COMMITTED
+      writes {
+        chosen_option = chosen_option
+        commit_rationale = commit_rationale
+        decider_id = decider_id
+        state = "COMMITTED"
+        decided_at = now()
+      }
+
+    Withdraw(withdrawal_reason: String) -> WITHDRAWN
+      writes {
+        withdrawal_reason = withdrawal_reason
+        state = "WITHDRAWN"
+      }
+  }
+
+  COMMITTED { }
+  WITHDRAWN { }
+}

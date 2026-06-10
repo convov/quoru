@@ -1,0 +1,138 @@
+# qa-engagement.fuse — qa persona engagement workflow.
+#
+# One instance per TestPlan. The qa role owns plan authorship and
+# the lifecycle of one named plan. Per-run state (TestRun entities)
+# and per-defect state (DefectReport entities) live as separate
+# entities referenced by id on events; treat those as the qa role's
+# secondary surface, not bound by this engagement.
+#
+# Acts on a single TestPlan entity, driving DRAFTED → READY →
+# SUPERSEDED|ABANDONED.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete READY     -> TestPlanReady
+#              fail     ABANDONED -> TestPlanAbandoned
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow qa_engagement v1 {
+
+  acts_on {
+    plan: TestPlan v1 {
+      key {
+        plan_id: data.plan_id
+      }
+      bind when DraftTestPlan using {
+        plan_id
+      }
+    }
+  }
+
+  events {
+    DraftTestPlan       { plan_id: ID, subject: String, milestone_id: ID, plan_ref: String, author_id: ID }
+    FinalizePlan        { }
+    SupersedePlan       { superseded_by_id: ID }
+    AbandonPlan         { abandonment_reason: String }
+
+    PlanDraftApplied      {}
+    PlanDraftRejected     {}
+    PlanDraftFailed       {}
+    PlanFinalizeApplied   {}
+    PlanFinalizeRejected  {}
+    PlanFinalizeFailed    {}
+    PlanSupersedeApplied  {}
+    PlanSupersedeRejected {}
+    PlanSupersedeFailed   {}
+    PlanAbandonApplied    {}
+    PlanAbandonRejected   {}
+    PlanAbandonFailed     {}
+  }
+
+  data {
+    plan_id            : ID?
+    subject            : String?
+    milestone_id       : ID?
+    plan_ref           : String?
+    author_id          : ID?
+    superseded_by_id   : ID?
+    abandonment_reason : String?
+  }
+
+  DRAFTING {
+    DraftTestPlan -> AWAITING_FINALIZE
+      capture plan_id
+      capture subject
+      capture milestone_id
+      capture plan_ref
+      capture author_id
+      apply plan.Draft with {
+        plan_id: event.plan_id,
+        subject: event.subject,
+        milestone_id: event.milestone_id,
+        plan_ref: event.plan_ref,
+        author_id: event.author_id
+      } results {
+        applied as PlanDraftApplied
+        rejected as PlanDraftRejected
+        failed as PlanDraftFailed
+      }
+  }
+
+  AWAITING_FINALIZE {
+    FinalizePlan -> READY
+      apply plan.Finalize results {
+        applied as PlanFinalizeApplied
+        rejected as PlanFinalizeRejected
+        failed as PlanFinalizeFailed
+      }
+    AbandonPlan -> ABANDONED
+      capture abandonment_reason
+      apply plan.Abandon with {
+        abandonment_reason: event.abandonment_reason
+      } results {
+        applied as PlanAbandonApplied
+        rejected as PlanAbandonRejected
+        failed as PlanAbandonFailed
+      }
+  }
+
+  READY {
+    SupersedePlan -> SUPERSEDED
+      capture superseded_by_id
+      apply plan.Supersede with {
+        superseded_by_id: event.superseded_by_id
+      } results {
+        applied as PlanSupersedeApplied
+        rejected as PlanSupersedeRejected
+        failed as PlanSupersedeFailed
+      }
+  }
+
+  terminal SUPERSEDED, ABANDONED
+
+  test "qa drafts plan, finalizes" {
+    given submit { plan_id: "tp_1", subject: "durability tests", milestone_id: "M-101", plan_ref: "/docs/tests/durability.md", author_id: "qa_iris" }
+    when FinalizePlan { }
+    expect no errors
+    expect state == READY
+    expect data.plan_ref == "/docs/tests/durability.md"
+  }
+
+  test "qa drafts plan, abandons before finalize" {
+    given submit { plan_id: "tp_2", subject: "stale plan", milestone_id: "M-101", plan_ref: "/docs/tests/stale.md", author_id: "qa_iris" }
+    when AbandonPlan { abandonment_reason: "scope changed" }
+    expect state == ABANDONED
+    expect data.abandonment_reason == "scope changed"
+  }
+
+  test "ready plan superseded by revision" {
+    given submit { plan_id: "tp_3a", subject: "v1 plan", milestone_id: "M-101", plan_ref: "/docs/tests/v1.md", author_id: "qa_iris" }
+    when FinalizePlan { }
+    when SupersedePlan { superseded_by_id: "tp_3b" }
+    expect state == SUPERSEDED
+    expect data.superseded_by_id == "tp_3b"
+  }
+}

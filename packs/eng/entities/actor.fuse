@@ -1,0 +1,53 @@
+# actor.fuse — Actor entity for the eng pack.
+#
+# Every persona that participates in an eng-pack conversation is an Actor
+# instance: techlead, researcher, architect, strategist, dev, qa, auditor,
+# and the three human-typed roles (decider, approver, qa-owner). The role
+# enum is the team composition table from docs/packs/eng.md.
+#
+# Conversations reference actors by id on each event (audit chain).
+# This entity is NOT bound via acts_on — it has many instances per
+# conversation, and most actors outlive any single conversation.
+#
+# Stage-B note: definition-only here. A production deployment supplies
+# the Postgres binding via a separate `bindings` profile.
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity Actor v1 {
+  @order(actor_id, role, display_name, status)
+
+  data {
+    actor_id: ID @key @display(name: "Actor ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    role: String @display(name: "Role", readonly) @validate(regex: "^(techlead|researcher|architect|strategist|dev|qa|auditor|decider|approver|qa-owner)$", message: "must be a valid eng role") @group("identity")
+    display_name: String @display(name: "Name") @group("identity")
+    kind: String @display(name: "Kind", readonly) @validate(regex: "^(agent|human)$", message: "kind must be agent or human") @group("identity")
+    status: String? @writable @display(name: "Status") @group("status")
+    created_at: Timestamp @display(name: "Created", format: "timestamp", readonly) @group("lifecycle")
+    retired_at: Timestamp? @display(name: "Retired", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  AVAILABLE {
+    Register(actor_id: ID, role: String, display_name: String, kind: String) -> AVAILABLE
+      writes {
+        actor_id = actor_id
+        role = role
+        display_name = display_name
+        kind = kind
+        state = "AVAILABLE"
+        created_at = now()
+      }
+
+    Retire -> RETIRED
+      writes {
+        state = "RETIRED"
+        retired_at = now()
+      }
+  }
+
+  RETIRED { }
+}

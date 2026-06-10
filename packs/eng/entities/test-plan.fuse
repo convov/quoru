@@ -1,0 +1,70 @@
+# test-plan.fuse — TestPlan entity for the eng pack.
+#
+# Authored by `qa` (eng.plan-tests) before any TestRun executes.
+# A plan can spawn multiple TestRun instances (re-runs, fixtures,
+# different environments). The plan / run split mirrors the
+# "spec vs execution" pattern from CI systems.
+#
+# Lifecycle: DRAFTED -> READY -> SUPERSEDED. ABANDONED for plans
+# scrapped before any run.
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity TestPlan v1 {
+  @order(plan_id, state, subject, author_id, milestone_id, drafted_at)
+
+  data {
+    plan_id: ID @key @display(name: "Plan ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    milestone_id: ID @display(name: "Milestone", format: "id", readonly) @nav(view: "milestone.detail", label: "Milestone") @group("content")
+    plan_ref: String? @display(name: "Plan location", hint: "URL or repo path to the test plan document") @group("content")
+    coverage_summary: String? @writable @display(name: "Coverage summary") @group("content")
+    author_id: ID @display(name: "Author", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    superseded_by_id: ID? @display(name: "Superseded by", format: "id", readonly) @nav(view: "test-plan.detail", label: "Plan") @group("lifecycle")
+    abandonment_reason: String? @writable @display(name: "Abandonment reason") @group("lifecycle")
+    drafted_at: Timestamp @display(name: "Drafted", format: "timestamp", readonly) @group("lifecycle")
+    finalized_at: Timestamp? @display(name: "Finalized", format: "timestamp", readonly) @group("lifecycle")
+    superseded_at: Timestamp? @display(name: "Superseded", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  DRAFTED {
+    Draft(plan_id: ID, subject: String, milestone_id: ID, plan_ref: String, author_id: ID) -> DRAFTED
+      writes {
+        plan_id = plan_id
+        subject = subject
+        milestone_id = milestone_id
+        plan_ref = plan_ref
+        author_id = author_id
+        state = "DRAFTED"
+        drafted_at = now()
+      }
+
+    Finalize -> READY
+      writes {
+        state = "READY"
+        finalized_at = now()
+      }
+
+    Abandon(abandonment_reason: String) -> ABANDONED
+      writes {
+        abandonment_reason = abandonment_reason
+        state = "ABANDONED"
+      }
+  }
+
+  READY {
+    Supersede(superseded_by_id: ID) -> SUPERSEDED
+      writes {
+        superseded_by_id = superseded_by_id
+        state = "SUPERSEDED"
+        superseded_at = now()
+      }
+  }
+
+  SUPERSEDED { }
+  ABANDONED { }
+}

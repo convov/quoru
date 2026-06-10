@@ -1,0 +1,213 @@
+# dev-engagement.fuse — dev persona engagement workflow.
+#
+# One instance per CodeChange — a feature spawns multiple dev
+# engagements when there are multiple code changes (e.g., a fix-up
+# after a failed test run is its own dev engagement on its own
+# CodeChange entity). Acts on a single CodeChange entity, driving
+# its PROPOSED → IN_REVIEW → APPROVED → MERGED → DEPLOYED
+# lifecycle.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete DEPLOYED   -> CodeChangeDeployed
+#              fail     ABANDONED  -> CodeChangeAbandoned
+#                       REJECTED   -> CodeChangeRejected
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow dev_engagement v1 {
+
+  acts_on {
+    change: CodeChange v1 {
+      key {
+        change_id: data.change_id
+      }
+      bind when ProposeChange using {
+        change_id
+      }
+    }
+  }
+
+  events {
+    ProposeChange      { change_id: ID, subject: String, milestone_id: ID, diff_ref: String, author_id: ID }
+    StartReview        { reviewer_id: ID }
+    ApproveChange      { review_rationale: String }
+    RejectChange       { rejection_reason: String }
+    MergeChange        { merger_id: ID }
+    DeployChange       { deployer_id: ID, deploy_ref: String }
+    AbandonChange      { abandonment_reason: String }
+
+    ChangeProposeApplied      {}
+    ChangeProposeRejected     {}
+    ChangeProposeFailed       {}
+    ChangeStartReviewApplied  {}
+    ChangeStartReviewRejected {}
+    ChangeStartReviewFailed   {}
+    ChangeApproveApplied      {}
+    ChangeApproveRejected     {}
+    ChangeApproveFailed       {}
+    ChangeRejectApplied       {}
+    ChangeRejectRejected      {}
+    ChangeRejectFailed        {}
+    ChangeMergeApplied        {}
+    ChangeMergeRejected       {}
+    ChangeMergeFailed         {}
+    ChangeDeployApplied       {}
+    ChangeDeployRejected      {}
+    ChangeDeployFailed        {}
+    ChangeAbandonApplied      {}
+    ChangeAbandonRejected     {}
+    ChangeAbandonFailed       {}
+  }
+
+  data {
+    change_id          : ID?
+    subject            : String?
+    milestone_id       : ID?
+    diff_ref           : String?
+    author_id          : ID?
+    reviewer_id        : ID?
+    review_rationale   : String?
+    rejection_reason   : String?
+    merger_id          : ID?
+    deployer_id        : ID?
+    deploy_ref         : String?
+    abandonment_reason : String?
+  }
+
+  PROPOSED {
+    ProposeChange -> OPENED
+      capture change_id
+      capture subject
+      capture milestone_id
+      capture diff_ref
+      capture author_id
+      apply change.Propose with {
+        change_id: event.change_id,
+        subject: event.subject,
+        milestone_id: event.milestone_id,
+        diff_ref: event.diff_ref,
+        author_id: event.author_id
+      } results {
+        applied as ChangeProposeApplied
+        rejected as ChangeProposeRejected
+        failed as ChangeProposeFailed
+      }
+  }
+
+  OPENED {
+    StartReview -> IN_REVIEW
+      capture reviewer_id
+      apply change.StartReview with {
+        reviewer_id: event.reviewer_id
+      } results {
+        applied as ChangeStartReviewApplied
+        rejected as ChangeStartReviewRejected
+        failed as ChangeStartReviewFailed
+      }
+    AbandonChange -> ABANDONED
+      capture abandonment_reason
+      apply change.Abandon with {
+        abandonment_reason: event.abandonment_reason
+      } results {
+        applied as ChangeAbandonApplied
+        rejected as ChangeAbandonRejected
+        failed as ChangeAbandonFailed
+      }
+  }
+
+  IN_REVIEW {
+    ApproveChange -> APPROVED
+      capture review_rationale
+      apply change.Approve with {
+        review_rationale: event.review_rationale
+      } results {
+        applied as ChangeApproveApplied
+        rejected as ChangeApproveRejected
+        failed as ChangeApproveFailed
+      }
+    RejectChange -> REJECTED
+      capture rejection_reason
+      apply change.Reject with {
+        rejection_reason: event.rejection_reason
+      } results {
+        applied as ChangeRejectApplied
+        rejected as ChangeRejectRejected
+        failed as ChangeRejectFailed
+      }
+    AbandonChange -> ABANDONED
+      capture abandonment_reason
+      apply change.Abandon with {
+        abandonment_reason: event.abandonment_reason
+      } results {
+        applied as ChangeAbandonApplied
+        rejected as ChangeAbandonRejected
+        failed as ChangeAbandonFailed
+      }
+  }
+
+  APPROVED {
+    MergeChange -> MERGED
+      capture merger_id
+      apply change.Merge with {
+        merger_id: event.merger_id
+      } results {
+        applied as ChangeMergeApplied
+        rejected as ChangeMergeRejected
+        failed as ChangeMergeFailed
+      }
+    AbandonChange -> ABANDONED
+      capture abandonment_reason
+      apply change.Abandon with {
+        abandonment_reason: event.abandonment_reason
+      } results {
+        applied as ChangeAbandonApplied
+        rejected as ChangeAbandonRejected
+        failed as ChangeAbandonFailed
+      }
+  }
+
+  MERGED {
+    DeployChange -> DEPLOYED
+      capture deployer_id
+      capture deploy_ref
+      apply change.Deploy with {
+        deployer_id: event.deployer_id,
+        deploy_ref: event.deploy_ref
+      } results {
+        applied as ChangeDeployApplied
+        rejected as ChangeDeployRejected
+        failed as ChangeDeployFailed
+      }
+  }
+
+  terminal DEPLOYED, REJECTED, ABANDONED
+
+  test "dev proposes, review approves, merges, deploys" {
+    given submit { change_id: "cc_1", subject: "wire WAL", milestone_id: "M-101", diff_ref: "/pr/123", author_id: "dev_chris" }
+    when StartReview { reviewer_id: "dev_hank" }
+    when ApproveChange { review_rationale: "lgtm" }
+    when MergeChange { merger_id: "dev_chris" }
+    when DeployChange { deployer_id: "dev_chris", deploy_ref: "build_42" }
+    expect state == DEPLOYED
+    expect data.deploy_ref == "build_42"
+    expect data.review_rationale == "lgtm"
+  }
+
+  test "dev proposes, change rejected on review" {
+    given submit { change_id: "cc_2", subject: "first attempt", milestone_id: "M-101", diff_ref: "/pr/200", author_id: "dev_chris" }
+    when StartReview { reviewer_id: "dev_hank" }
+    when RejectChange { rejection_reason: "needs more tests" }
+    expect state == REJECTED
+    expect data.rejection_reason == "needs more tests"
+  }
+
+  test "dev abandons change before review" {
+    given submit { change_id: "cc_3", subject: "exploration", milestone_id: "M-101", diff_ref: "/pr/300", author_id: "dev_chris" }
+    when AbandonChange { abandonment_reason: "approach unworkable" }
+    expect state == ABANDONED
+    expect data.abandonment_reason == "approach unworkable"
+  }
+}

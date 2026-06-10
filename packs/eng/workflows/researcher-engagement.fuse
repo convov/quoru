@@ -1,0 +1,143 @@
+# researcher-engagement.fuse — researcher persona engagement workflow.
+#
+# One instance per (feature × research-topic) pair. Spawned by the
+# orchestrator (eng-feature) when a research topic is identified.
+# Acts on a single ResearchArtifact entity, driving its lifecycle
+# from REQUESTED → SYNTHESIZED (or REJECTED if declined).
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete SYNTHESIZED  -> ResearchSynthesized
+#              fail     REJECTED     -> ResearchDeclined
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow researcher_engagement v1 {
+
+  acts_on {
+    artifact: ResearchArtifact v1 {
+      key {
+        artifact_id: data.artifact_id
+      }
+      bind when CommissionResearch using {
+        artifact_id
+      }
+    }
+  }
+
+  events {
+    CommissionResearch  { artifact_id: ID, subject: String, requester_id: ID, assignee_id: ID }
+    AcceptCommission    { }
+    DeclineCommission   { rejection_reason: String }
+    SubmitFindings      { artifact_ref: String, citations: String, summary: String }
+    ConsumeArtifact     { }
+
+    ArtifactCommissionApplied  {}
+    ArtifactCommissionRejected {}
+    ArtifactCommissionFailed   {}
+    ArtifactAcceptApplied      {}
+    ArtifactAcceptRejected     {}
+    ArtifactAcceptFailed       {}
+    ArtifactRejectApplied      {}
+    ArtifactRejectRejected     {}
+    ArtifactRejectFailed       {}
+    ArtifactSynthesizeApplied  {}
+    ArtifactSynthesizeRejected {}
+    ArtifactSynthesizeFailed   {}
+    ArtifactConsumeApplied     {}
+    ArtifactConsumeRejected    {}
+    ArtifactConsumeFailed      {}
+  }
+
+  data {
+    artifact_id      : ID?
+    subject          : String?
+    requester_id     : ID?
+    assignee_id      : ID?
+    artifact_ref     : String?
+    citations        : String?
+    summary          : String?
+    rejection_reason : String?
+  }
+
+  COMMISSIONED {
+    CommissionResearch -> TRIAGING
+      capture artifact_id
+      capture subject
+      capture requester_id
+      capture assignee_id
+      apply artifact.Commission with {
+        artifact_id: event.artifact_id,
+        subject: event.subject,
+        requester_id: event.requester_id,
+        assignee_id: event.assignee_id
+      } results {
+        applied as ArtifactCommissionApplied
+        rejected as ArtifactCommissionRejected
+        failed as ArtifactCommissionFailed
+      }
+  }
+
+  TRIAGING {
+    AcceptCommission -> INVESTIGATING
+      apply artifact.Accept results {
+        applied as ArtifactAcceptApplied
+        rejected as ArtifactAcceptRejected
+        failed as ArtifactAcceptFailed
+      }
+    DeclineCommission -> REJECTED
+      capture rejection_reason
+      apply artifact.Reject with {
+        rejection_reason: event.rejection_reason
+      } results {
+        applied as ArtifactRejectApplied
+        rejected as ArtifactRejectRejected
+        failed as ArtifactRejectFailed
+      }
+  }
+
+  INVESTIGATING {
+    SubmitFindings -> SYNTHESIZED
+      capture artifact_ref
+      capture citations
+      capture summary
+      apply artifact.Synthesize with {
+        artifact_ref: event.artifact_ref,
+        citations: event.citations
+      } results {
+        applied as ArtifactSynthesizeApplied
+        rejected as ArtifactSynthesizeRejected
+        failed as ArtifactSynthesizeFailed
+      }
+  }
+
+  SYNTHESIZED {
+    ConsumeArtifact -> CONSUMED
+      apply artifact.Consume results {
+        applied as ArtifactConsumeApplied
+        rejected as ArtifactConsumeRejected
+        failed as ArtifactConsumeFailed
+      }
+  }
+
+  terminal CONSUMED, REJECTED
+
+  test "researcher accepts, synthesizes, artifact consumed" {
+    given submit { artifact_id: "ra_1", subject: "prior art on conversation durability", requester_id: "tl_alice", assignee_id: "rs_bob" }
+    when AcceptCommission { }
+    when SubmitFindings { artifact_ref: "/docs/research/durability.md", citations: "RAFT;Calvin", summary: "WAL-backed is mainstream" }
+    when ConsumeArtifact { }
+    expect state == CONSUMED
+    expect data.artifact_ref == "/docs/research/durability.md"
+    expect data.summary == "WAL-backed is mainstream"
+  }
+
+  test "researcher declines commission" {
+    given submit { artifact_id: "ra_2", subject: "exotic topic", requester_id: "tl_alice", assignee_id: "rs_bob" }
+    when DeclineCommission { rejection_reason: "out of expertise" }
+    expect state == REJECTED
+    expect data.rejection_reason == "out of expertise"
+  }
+}

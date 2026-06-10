@@ -1,0 +1,67 @@
+# attestation.fuse — Attestation entity for the eng pack.
+#
+# Produced by the `auditor` (eng.attest) against some target artifact
+# (a Design, a CodeChange, a TestRun, etc.) under a stated policy.
+# The verdict + rationale is what gets surfaced to compliance / risk
+# reviews. Quoru's audit chain becomes the compliance evidence.
+#
+# Lifecycle: PENDING -> ISSUED. WITHDRAWN as a side terminal for
+# attestations the auditor later rescinds.
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity Attestation v1 {
+  @order(attestation_id, state, verdict, target_kind, target_ref, auditor_id, issued_at)
+
+  data {
+    attestation_id: ID @key @display(name: "Attestation ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    target_kind: String @display(name: "Target kind") @validate(regex: "^(design|code-change|test-run|milestone|research-artifact|strategy-decision)$", message: "target_kind must name a known eng-pack entity kind") @group("target")
+    target_ref: ID @display(name: "Target ID", format: "id", readonly) @group("target")
+    policy_ref: String? @display(name: "Policy reference", hint: "URL or repo path to the policy this attestation evaluates against") @group("content")
+    auditor_id: ID @display(name: "Auditor", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    verdict: String? @display(name: "Verdict") @validate(regex: "^(approve|deny|conditional)$", message: "verdict must be approve / deny / conditional") @group("decision")
+    rationale: String? @writable @display(name: "Rationale", hint: "Why the auditor reached this verdict") @group("decision")
+    conditions: String? @writable @display(name: "Conditions", hint: "If verdict=conditional, what must happen for approval") @group("decision")
+    withdrawal_reason: String? @writable @display(name: "Withdrawal reason") @group("lifecycle")
+    requested_at: Timestamp @display(name: "Requested", format: "timestamp", readonly) @group("lifecycle")
+    issued_at: Timestamp? @display(name: "Issued", format: "timestamp", readonly) @group("lifecycle")
+    withdrawn_at: Timestamp? @display(name: "Withdrawn", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  PENDING {
+    Request(attestation_id: ID, target_kind: String, target_ref: ID, policy_ref: String, auditor_id: ID) -> PENDING
+      writes {
+        attestation_id = attestation_id
+        target_kind = target_kind
+        target_ref = target_ref
+        policy_ref = policy_ref
+        auditor_id = auditor_id
+        state = "PENDING"
+        requested_at = now()
+      }
+
+    Issue(verdict: String, rationale: String, conditions: String) -> ISSUED
+      writes {
+        verdict = verdict
+        rationale = rationale
+        conditions = conditions
+        state = "ISSUED"
+        issued_at = now()
+      }
+  }
+
+  ISSUED {
+    Withdraw(withdrawal_reason: String) -> WITHDRAWN
+      writes {
+        withdrawal_reason = withdrawal_reason
+        state = "WITHDRAWN"
+        withdrawn_at = now()
+      }
+  }
+
+  WITHDRAWN { }
+}

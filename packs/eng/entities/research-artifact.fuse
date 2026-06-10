@@ -1,0 +1,79 @@
+# research-artifact.fuse — ResearchArtifact entity for the eng pack.
+#
+# Produced by the `researcher` role in response to an `eng.commission`
+# (intra-team) or `eng.research-request` (cross-team). The artifact is
+# referenced by id from the feature workflow once synthesized; downstream
+# consumers (strategist, architect, techlead) cite it by id.
+#
+# Lifecycle: REQUESTED -> IN_PROGRESS -> SYNTHESIZED -> CONSUMED.
+# REJECTED is a side terminal for "topic declined / not pursued."
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity ResearchArtifact v1 {
+  @order(artifact_id, state, subject, requester_id, assignee_id, due_by, created_at)
+
+  data {
+    artifact_id: ID @key @display(name: "Artifact ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    scope: String? @writable @display(name: "Scope", hint: "What is in/out of scope for this investigation?") @group("content")
+    requester_id: ID @display(name: "Requested by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    assignee_id: ID? @display(name: "Assigned to", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    due_by: String? @display(name: "Due by") @group("schedule")
+    artifact_ref: String? @display(name: "Artifact location", hint: "URL or repo path to the synthesized artifact") @group("content")
+    citations: String? @display(name: "Citations") @group("content")
+    summary: String? @writable @display(name: "Summary", hint: "Plain-language summary of findings") @group("content")
+    rejection_reason: String? @writable @display(name: "Rejection reason") @group("lifecycle")
+    created_at: Timestamp @display(name: "Created", format: "timestamp", readonly) @group("lifecycle")
+    synthesized_at: Timestamp? @display(name: "Synthesized", format: "timestamp", readonly) @group("lifecycle")
+    consumed_at: Timestamp? @display(name: "Consumed", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  REQUESTED {
+    Commission(artifact_id: ID, subject: String, requester_id: ID, assignee_id: ID) -> REQUESTED
+      writes {
+        artifact_id = artifact_id
+        subject = subject
+        requester_id = requester_id
+        assignee_id = assignee_id
+        state = "REQUESTED"
+        created_at = now()
+      }
+
+    Accept -> IN_PROGRESS
+      writes {
+        state = "IN_PROGRESS"
+      }
+
+    Reject(rejection_reason: String) -> REJECTED
+      writes {
+        rejection_reason = rejection_reason
+        state = "REJECTED"
+      }
+  }
+
+  IN_PROGRESS {
+    Synthesize(artifact_ref: String, citations: String) -> SYNTHESIZED
+      writes {
+        artifact_ref = artifact_ref
+        citations = citations
+        state = "SYNTHESIZED"
+        synthesized_at = now()
+      }
+  }
+
+  SYNTHESIZED {
+    Consume -> CONSUMED
+      writes {
+        state = "CONSUMED"
+        consumed_at = now()
+      }
+  }
+
+  CONSUMED { }
+  REJECTED { }
+}

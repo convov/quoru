@@ -1,0 +1,131 @@
+# auditor-engagement.fuse — auditor persona engagement workflow.
+#
+# One instance per Attestation request. The auditor reviews some
+# target artifact (a Design, a CodeChange, a TestRun, etc.) under a
+# stated policy and issues a verdict. Acts on a single Attestation
+# entity.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete ISSUED     -> AttestationIssued
+#              fail     WITHDRAWN  -> AttestationWithdrawn
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow auditor_engagement v1 {
+
+  acts_on {
+    attestation: Attestation v1 {
+      key {
+        attestation_id: data.attestation_id
+      }
+      bind when RequestAttestation using {
+        attestation_id
+      }
+    }
+  }
+
+  events {
+    RequestAttestation  { attestation_id: ID, target_kind: String, target_ref: ID, policy_ref: String, auditor_id: ID }
+    IssueAttestation    { verdict: String, rationale: String, conditions: String }
+    WithdrawAttestation { withdrawal_reason: String }
+
+    AttestationRequestApplied   {}
+    AttestationRequestRejected  {}
+    AttestationRequestFailed    {}
+    AttestationIssueApplied     {}
+    AttestationIssueRejected    {}
+    AttestationIssueFailed      {}
+    AttestationWithdrawApplied  {}
+    AttestationWithdrawRejected {}
+    AttestationWithdrawFailed   {}
+  }
+
+  data {
+    attestation_id    : ID?
+    target_kind       : String?
+    target_ref        : ID?
+    policy_ref        : String?
+    auditor_id        : ID?
+    verdict           : String?
+    rationale         : String?
+    conditions        : String?
+    withdrawal_reason : String?
+  }
+
+  PENDING {
+    RequestAttestation -> REVIEWING
+      capture attestation_id
+      capture target_kind
+      capture target_ref
+      capture policy_ref
+      capture auditor_id
+      apply attestation.Request with {
+        attestation_id: event.attestation_id,
+        target_kind: event.target_kind,
+        target_ref: event.target_ref,
+        policy_ref: event.policy_ref,
+        auditor_id: event.auditor_id
+      } results {
+        applied as AttestationRequestApplied
+        rejected as AttestationRequestRejected
+        failed as AttestationRequestFailed
+      }
+  }
+
+  REVIEWING {
+    IssueAttestation -> ISSUED
+      capture verdict
+      capture rationale
+      capture conditions
+      apply attestation.Issue with {
+        verdict: event.verdict,
+        rationale: event.rationale,
+        conditions: event.conditions
+      } results {
+        applied as AttestationIssueApplied
+        rejected as AttestationIssueRejected
+        failed as AttestationIssueFailed
+      }
+  }
+
+  ISSUED {
+    WithdrawAttestation -> WITHDRAWN
+      capture withdrawal_reason
+      apply attestation.Withdraw with {
+        withdrawal_reason: event.withdrawal_reason
+      } results {
+        applied as AttestationWithdrawApplied
+        rejected as AttestationWithdrawRejected
+        failed as AttestationWithdrawFailed
+      }
+  }
+
+  terminal ISSUED, WITHDRAWN
+
+  test "auditor reviews, issues approve verdict" {
+    given submit { attestation_id: "at_1", target_kind: "code-change", target_ref: "cc_1", policy_ref: "/policy/durability.md", auditor_id: "au_kate" }
+    when IssueAttestation { verdict: "approve", rationale: "meets policy", conditions: "" }
+    expect no errors
+    expect state == ISSUED
+    expect data.verdict == "approve"
+  }
+
+  test "auditor issues conditional verdict" {
+    given submit { attestation_id: "at_2", target_kind: "design", target_ref: "d_1", policy_ref: "/policy/data-handling.md", auditor_id: "au_kate" }
+    when IssueAttestation { verdict: "conditional", rationale: "needs PII review before merge", conditions: "complete the PII inventory" }
+    expect state == ISSUED
+    expect data.verdict == "conditional"
+    expect data.conditions == "complete the PII inventory"
+  }
+
+  test "issued attestation withdrawn later" {
+    given submit { attestation_id: "at_3", target_kind: "code-change", target_ref: "cc_99", policy_ref: "/policy/security.md", auditor_id: "au_kate" }
+    when IssueAttestation { verdict: "approve", rationale: "looks ok", conditions: "" }
+    when WithdrawAttestation { withdrawal_reason: "new CVE invalidates the basis" }
+    expect state == WITHDRAWN
+    expect data.withdrawal_reason == "new CVE invalidates the basis"
+  }
+}

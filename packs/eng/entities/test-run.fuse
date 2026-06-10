@@ -1,0 +1,79 @@
+# test-run.fuse — TestRun entity for the eng pack.
+#
+# An execution of a TestPlan. The plan / run split lets a single
+# authored plan produce many runs across re-tests, environments,
+# and post-fix verifications. Verdict is captured on the terminal
+# transition (PASSED / FAILED / ERRORED).
+#
+# Lifecycle: RUNNING -> PASSED | FAILED | ERRORED.
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity TestRun v1 {
+  @order(run_id, state, plan_id, executor_id, started_at, finished_at)
+
+  data {
+    run_id: ID @key @display(name: "Run ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    plan_id: ID @display(name: "Plan", format: "id", readonly) @nav(view: "test-plan.detail", label: "Plan") @group("content")
+    milestone_id: ID @display(name: "Milestone", format: "id", readonly) @nav(view: "milestone.detail", label: "Milestone") @group("content")
+    environment: String? @display(name: "Environment") @group("content")
+    executor_id: ID @display(name: "Executor", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    passed: Int? @display(name: "Tests passed", readonly) @group("results")
+    failed: Int? @display(name: "Tests failed", readonly) @group("results")
+    skipped: Int? @display(name: "Tests skipped", readonly) @group("results")
+    duration_ms: Int? @display(name: "Duration (ms)", readonly) @group("results")
+    summary_ref: String? @display(name: "Summary location", hint: "URL or repo path to the run summary / logs") @group("results")
+    failure_message: String? @writable @display(name: "Failure message") @group("results")
+    error_message: String? @writable @display(name: "Error message") @group("results")
+    started_at: Timestamp @display(name: "Started", format: "timestamp", readonly) @group("lifecycle")
+    finished_at: Timestamp? @display(name: "Finished", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  RUNNING {
+    Start(run_id: ID, plan_id: ID, milestone_id: ID, executor_id: ID, environment: String) -> RUNNING
+      writes {
+        run_id = run_id
+        plan_id = plan_id
+        milestone_id = milestone_id
+        executor_id = executor_id
+        environment = environment
+        state = "RUNNING"
+        started_at = now()
+      }
+
+    Pass(passed: Int, duration_ms: Int, summary_ref: String) -> PASSED
+      writes {
+        passed = passed
+        duration_ms = duration_ms
+        summary_ref = summary_ref
+        state = "PASSED"
+        finished_at = now()
+      }
+
+    Fail(passed: Int, failed: Int, duration_ms: Int, failure_message: String, summary_ref: String) -> FAILED
+      writes {
+        passed = passed
+        failed = failed
+        duration_ms = duration_ms
+        failure_message = failure_message
+        summary_ref = summary_ref
+        state = "FAILED"
+        finished_at = now()
+      }
+
+    Error(error_message: String) -> ERRORED
+      writes {
+        error_message = error_message
+        state = "ERRORED"
+        finished_at = now()
+      }
+  }
+
+  PASSED { }
+  FAILED { }
+  ERRORED { }
+}

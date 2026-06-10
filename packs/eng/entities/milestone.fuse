@@ -1,0 +1,118 @@
+# milestone.fuse — Milestone entity for the eng pack.
+#
+# The unit of feature delivery. Carved by the `techlead` (eng.carve),
+# claimed by a `dev` or `qa` (eng.claim), shipped by the `techlead`
+# (eng.ship) optionally with a post-ship gate. This is the entity the
+# main eng_feature workflow binds via acts_on — every feature
+# conversation owns exactly one Milestone.
+#
+# Lifecycle: CARVED -> CLAIMED -> IN_PROGRESS -> READY_TO_SHIP ->
+# SHIPPED. DRAINED is the abandon terminal. GATED_POST_SHIP is the
+# "shipped with a downstream follow-on dependency" state that
+# unblocks the next carve only when the gate clears (docs/packs/eng.md
+# worked example 2).
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity Milestone v1 {
+  @order(milestone_id, state, subject, carver_id, claimed_by_id, shipped_at)
+
+  data {
+    milestone_id: ID @key @display(name: "Milestone ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    design_id: ID? @display(name: "Design", format: "id", readonly) @nav(view: "design.detail", label: "Design") @group("content")
+    design_ref: String? @display(name: "Design location") @group("content")
+    carver_id: ID @display(name: "Carved by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    claimed_by_id: ID? @display(name: "Claimed by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    shipper_id: ID? @display(name: "Shipped by", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    gate_kind: String? @writable @display(name: "Gate kind", hint: "e.g. external-deliverable") @group("ship-gate")
+    gate_from: String? @writable @display(name: "Gate from", hint: "Peer team or system the gate depends on") @group("ship-gate")
+    gate_description: String? @writable @display(name: "Gate description") @group("ship-gate")
+    drain_reason: String? @writable @display(name: "Drain reason") @group("lifecycle")
+    carved_at: Timestamp @display(name: "Carved", format: "timestamp", readonly) @group("lifecycle")
+    claimed_at: Timestamp? @display(name: "Claimed", format: "timestamp", readonly) @group("lifecycle")
+    started_at: Timestamp? @display(name: "Started", format: "timestamp", readonly) @group("lifecycle")
+    ready_at: Timestamp? @display(name: "Ready to ship", format: "timestamp", readonly) @group("lifecycle")
+    shipped_at: Timestamp? @display(name: "Shipped", format: "timestamp", readonly) @group("lifecycle")
+    gate_cleared_at: Timestamp? @display(name: "Gate cleared", format: "timestamp", readonly) @group("lifecycle")
+    drained_at: Timestamp? @display(name: "Drained", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  CARVED {
+    Carve(milestone_id: ID, subject: String, design_id: ID, design_ref: String, carver_id: ID) -> CARVED
+      writes {
+        milestone_id = milestone_id
+        subject = subject
+        design_id = design_id
+        design_ref = design_ref
+        carver_id = carver_id
+        state = "CARVED"
+        carved_at = now()
+      }
+
+    Claim(claimed_by_id: ID) -> CLAIMED
+      writes {
+        claimed_by_id = claimed_by_id
+        state = "CLAIMED"
+        claimed_at = now()
+      }
+  }
+
+  CLAIMED {
+    Start -> IN_PROGRESS
+      writes {
+        state = "IN_PROGRESS"
+        started_at = now()
+      }
+  }
+
+  IN_PROGRESS {
+    Ready -> READY_TO_SHIP
+      writes {
+        state = "READY_TO_SHIP"
+        ready_at = now()
+      }
+  }
+
+  READY_TO_SHIP {
+    Ship(shipper_id: ID) -> SHIPPED
+      writes {
+        shipper_id = shipper_id
+        state = "SHIPPED"
+        shipped_at = now()
+      }
+
+    ShipWithGate(shipper_id: ID, gate_kind: String, gate_from: String, gate_description: String) -> GATED_POST_SHIP
+      writes {
+        shipper_id = shipper_id
+        gate_kind = gate_kind
+        gate_from = gate_from
+        gate_description = gate_description
+        state = "GATED_POST_SHIP"
+        shipped_at = now()
+      }
+  }
+
+  GATED_POST_SHIP {
+    ClearGate -> SHIPPED
+      writes {
+        state = "SHIPPED"
+        gate_cleared_at = now()
+      }
+  }
+
+  transitions {
+    Drain(drain_reason) : CARVED | CLAIMED | IN_PROGRESS | READY_TO_SHIP -> DRAINED {
+      set drain_reason = drain_reason
+      set state = "DRAINED"
+      set drained_at = now()
+    }
+  }
+
+  SHIPPED { }
+  DRAINED { }
+}

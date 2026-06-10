@@ -1,0 +1,140 @@
+# architect-engagement.fuse — architect persona engagement workflow.
+#
+# One instance per Design draft. Multiple architect engagements may
+# exist per feature when a design is rejected and re-drafted (each
+# attempt is a separate Design entity → separate architect
+# engagement). Acts on a single Design entity, driving its
+# DRAFTED → APPROVED|REJECTED lifecycle. The approver (human) emits
+# ApproveDesign / RejectDesign.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete APPROVED  -> DesignApproved
+#              fail     REJECTED  -> DesignRejected
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow architect_engagement v1 {
+
+  acts_on {
+    design: Design v1 {
+      key {
+        design_id: data.design_id
+      }
+      bind when DraftDesign using {
+        design_id
+      }
+    }
+  }
+
+  events {
+    DraftDesign     { design_id: ID, subject: String, draft_ref: String, author_id: ID }
+    ApproveDesign   { approver_id: ID, approval_rationale: String }
+    RejectDesign    { rejection_reason: String }
+    SupersedeDesign { superseded_by_id: ID }
+
+    DesignDraftApplied      {}
+    DesignDraftRejected     {}
+    DesignDraftFailed       {}
+    DesignApproveApplied    {}
+    DesignApproveRejected   {}
+    DesignApproveFailed     {}
+    DesignRejectApplied     {}
+    DesignRejectRejected    {}
+    DesignRejectFailed      {}
+    DesignSupersedeApplied  {}
+    DesignSupersedeRejected {}
+    DesignSupersedeFailed   {}
+  }
+
+  data {
+    design_id          : ID?
+    subject            : String?
+    draft_ref          : String?
+    author_id          : ID?
+    approver_id        : ID?
+    approval_rationale : String?
+    rejection_reason   : String?
+    superseded_by_id   : ID?
+  }
+
+  DRAFTING {
+    DraftDesign -> AWAITING_APPROVAL
+      capture design_id
+      capture subject
+      capture draft_ref
+      capture author_id
+      apply design.Draft with {
+        design_id: event.design_id,
+        subject: event.subject,
+        draft_ref: event.draft_ref,
+        author_id: event.author_id
+      } results {
+        applied as DesignDraftApplied
+        rejected as DesignDraftRejected
+        failed as DesignDraftFailed
+      }
+  }
+
+  AWAITING_APPROVAL {
+    ApproveDesign -> APPROVED
+      capture approver_id
+      capture approval_rationale
+      apply design.Approve with {
+        approver_id: event.approver_id,
+        approval_rationale: event.approval_rationale
+      } results {
+        applied as DesignApproveApplied
+        rejected as DesignApproveRejected
+        failed as DesignApproveFailed
+      }
+    RejectDesign -> REJECTED
+      capture rejection_reason
+      apply design.Reject with {
+        rejection_reason: event.rejection_reason
+      } results {
+        applied as DesignRejectApplied
+        rejected as DesignRejectRejected
+        failed as DesignRejectFailed
+      }
+  }
+
+  APPROVED {
+    SupersedeDesign -> SUPERSEDED
+      capture superseded_by_id
+      apply design.Supersede with {
+        superseded_by_id: event.superseded_by_id
+      } results {
+        applied as DesignSupersedeApplied
+        rejected as DesignSupersedeRejected
+        failed as DesignSupersedeFailed
+      }
+  }
+
+  terminal SUPERSEDED, REJECTED
+
+  test "architect drafts, approver approves" {
+    given submit { design_id: "d_1", subject: "WAL-backed durability", draft_ref: "/docs/design/d.md", author_id: "ar_fran" }
+    when ApproveDesign { approver_id: "ap_greg", approval_rationale: "sound tradeoffs" }
+    expect no errors
+    expect state == APPROVED
+    expect data.approver_id == "ap_greg"
+  }
+
+  test "architect drafts, approver rejects" {
+    given submit { design_id: "d_2", subject: "overscoped", draft_ref: "/docs/design/d2.md", author_id: "ar_fran" }
+    when RejectDesign { rejection_reason: "too much surface area" }
+    expect state == REJECTED
+    expect data.rejection_reason == "too much surface area"
+  }
+
+  test "approved design later superseded" {
+    given submit { design_id: "d_3a", subject: "v1", draft_ref: "/docs/design/d3a.md", author_id: "ar_fran" }
+    when ApproveDesign { approver_id: "ap_greg", approval_rationale: "ok" }
+    when SupersedeDesign { superseded_by_id: "d_3b" }
+    expect state == SUPERSEDED
+    expect data.superseded_by_id == "d_3b"
+  }
+}

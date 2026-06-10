@@ -1,0 +1,122 @@
+# strategist-engagement.fuse — strategist persona engagement workflow.
+#
+# One instance per (feature × strategic-question) pair. Spawned when
+# the orchestrator decides a feature needs strategic framing before
+# design. Acts on a single StrategyDecision entity, owning its
+# DRAFTED → COMMITTED lifecycle. The decider (human) emits the
+# CommitStrategy event; the strategist draft + decider commit
+# pattern is the canonical "agent proposes, human accepts" split
+# called out in docs/packs/eng.md.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete COMMITTED  -> StrategyCommitted
+#              fail     WITHDRAWN  -> StrategyWithdrawn
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow strategist_engagement v1 {
+
+  acts_on {
+    decision: StrategyDecision v1 {
+      key {
+        decision_id: data.decision_id
+      }
+      bind when FrameStrategy using {
+        decision_id
+      }
+    }
+  }
+
+  events {
+    FrameStrategy        { decision_id: ID, subject: String, options_ref: String, recommended_option: String, drafter_id: ID }
+    CommitStrategy       { chosen_option: String, commit_rationale: String, decider_id: ID }
+    WithdrawDecision     { withdrawal_reason: String }
+
+    DecisionFrameApplied      {}
+    DecisionFrameRejected     {}
+    DecisionFrameFailed       {}
+    DecisionCommitApplied     {}
+    DecisionCommitRejected    {}
+    DecisionCommitFailed      {}
+    DecisionWithdrawApplied   {}
+    DecisionWithdrawRejected  {}
+    DecisionWithdrawFailed    {}
+  }
+
+  data {
+    decision_id        : ID?
+    subject            : String?
+    options_ref        : String?
+    recommended_option : String?
+    drafter_id         : ID?
+    chosen_option      : String?
+    commit_rationale   : String?
+    decider_id         : ID?
+    withdrawal_reason  : String?
+  }
+
+  DRAFTING {
+    FrameStrategy -> AWAITING_DECISION
+      capture decision_id
+      capture subject
+      capture options_ref
+      capture recommended_option
+      capture drafter_id
+      apply decision.Frame with {
+        decision_id: event.decision_id,
+        subject: event.subject,
+        options_ref: event.options_ref,
+        recommended_option: event.recommended_option,
+        drafter_id: event.drafter_id
+      } results {
+        applied as DecisionFrameApplied
+        rejected as DecisionFrameRejected
+        failed as DecisionFrameFailed
+      }
+  }
+
+  AWAITING_DECISION {
+    CommitStrategy -> COMMITTED
+      capture chosen_option
+      capture commit_rationale
+      capture decider_id
+      apply decision.Commit with {
+        chosen_option: event.chosen_option,
+        commit_rationale: event.commit_rationale,
+        decider_id: event.decider_id
+      } results {
+        applied as DecisionCommitApplied
+        rejected as DecisionCommitRejected
+        failed as DecisionCommitFailed
+      }
+    WithdrawDecision -> WITHDRAWN
+      capture withdrawal_reason
+      apply decision.Withdraw with {
+        withdrawal_reason: event.withdrawal_reason
+      } results {
+        applied as DecisionWithdrawApplied
+        rejected as DecisionWithdrawRejected
+        failed as DecisionWithdrawFailed
+      }
+  }
+
+  terminal COMMITTED, WITHDRAWN
+
+  test "strategist drafts, decider commits" {
+    given submit { decision_id: "sd_1", subject: "durability approach", options_ref: "/docs/strategy/durability-options.md", recommended_option: "WAL-backed", drafter_id: "st_diana" }
+    when CommitStrategy { chosen_option: "WAL-backed", commit_rationale: "matches existing infra", decider_id: "dc_eric" }
+    expect state == COMMITTED
+    expect data.chosen_option == "WAL-backed"
+    expect data.decider_id == "dc_eric"
+  }
+
+  test "strategist drafts, decision withdrawn" {
+    given submit { decision_id: "sd_2", subject: "deprecation policy", options_ref: "/docs/strategy/dep-options.md", recommended_option: "soft-deprecate", drafter_id: "st_diana" }
+    when WithdrawDecision { withdrawal_reason: "scope no longer applies" }
+    expect state == WITHDRAWN
+    expect data.withdrawal_reason == "scope no longer applies"
+  }
+}

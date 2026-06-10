@@ -1,0 +1,246 @@
+# techlead-engagement.fuse — techlead persona engagement workflow.
+#
+# One instance per feature. The techlead owns the Milestone entity
+# end-to-end: triages the feature, commissions research and design
+# as needed, carves the milestone, monitors progress through the
+# dev/qa engagements (via outcomes), and ships.
+#
+# Acts on a single Milestone, driving its CARVED → CLAIMED →
+# IN_PROGRESS → READY_TO_SHIP → SHIPPED lifecycle. DrainMilestone
+# is the abandon path from any active state.
+#
+# Designed to compose into eng_feature as a submachine:
+#   outcomes:  complete SHIPPED  -> MilestoneShipped
+#              fail     DRAINED  -> MilestoneDrained
+
+package quoru.packs.eng
+
+use std.entity v1
+use std.test v1
+
+workflow techlead_engagement v1 {
+
+  acts_on {
+    milestone: Milestone v1 {
+      key {
+        milestone_id: data.milestone_id
+      }
+      bind when CarveMilestone using {
+        milestone_id
+      }
+    }
+  }
+
+  events {
+    AcceptFeature           { feature_subject: String, techlead_id: ID }
+    CarveMilestone          { milestone_id: ID, subject: String, design_id: ID, design_ref: String, carver_id: ID }
+    MilestoneClaimed        { claimed_by_id: ID }
+    WorkStarted             { }
+    WorkReady               { }
+    ShipMilestone           { shipper_id: ID }
+    ShipMilestoneWithGate   { shipper_id: ID, gate_kind: String, gate_from: String, gate_description: String }
+    GateCleared             { }
+    DrainMilestone          { drain_reason: String }
+
+    MilestoneCarveApplied            {}
+    MilestoneCarveRejected           {}
+    MilestoneCarveFailed             {}
+    MilestoneClaimApplied            {}
+    MilestoneClaimRejected           {}
+    MilestoneClaimFailed             {}
+    MilestoneStartApplied            {}
+    MilestoneStartRejected           {}
+    MilestoneStartFailed             {}
+    MilestoneReadyApplied            {}
+    MilestoneReadyRejected           {}
+    MilestoneReadyFailed             {}
+    MilestoneShipApplied             {}
+    MilestoneShipRejected            {}
+    MilestoneShipFailed              {}
+    MilestoneShipWithGateApplied     {}
+    MilestoneShipWithGateRejected    {}
+    MilestoneShipWithGateFailed      {}
+    MilestoneClearGateApplied        {}
+    MilestoneClearGateRejected       {}
+    MilestoneClearGateFailed         {}
+    MilestoneDrainApplied            {}
+    MilestoneDrainRejected           {}
+    MilestoneDrainFailed             {}
+  }
+
+  data {
+    feature_subject : String?
+    techlead_id     : ID?
+    milestone_id    : ID?
+    subject         : String?
+    design_id       : ID?
+    design_ref      : String?
+    claimed_by_id   : ID?
+    shipper_id      : ID?
+    gate_kind       : String?
+    gate_from       : String?
+    drain_reason    : String?
+  }
+
+  TRIAGING {
+    AcceptFeature -> AWAITING_DESIGN
+      capture feature_subject
+      capture techlead_id
+  }
+
+  AWAITING_DESIGN {
+    CarveMilestone -> CARVED
+      capture milestone_id
+      capture subject
+      capture design_id
+      capture design_ref
+      apply milestone.Carve with {
+        milestone_id: event.milestone_id,
+        subject: event.subject,
+        design_id: event.design_id,
+        design_ref: event.design_ref,
+        carver_id: event.carver_id
+      } results {
+        applied as MilestoneCarveApplied
+        rejected as MilestoneCarveRejected
+        failed as MilestoneCarveFailed
+      }
+    DrainMilestone -> DRAINED
+      capture drain_reason
+  }
+
+  CARVED {
+    MilestoneClaimed -> CLAIMED
+      capture claimed_by_id
+      apply milestone.Claim with {
+        claimed_by_id: event.claimed_by_id
+      } results {
+        applied as MilestoneClaimApplied
+        rejected as MilestoneClaimRejected
+        failed as MilestoneClaimFailed
+      }
+    DrainMilestone -> DRAINED
+      capture drain_reason
+      apply milestone.Drain with {
+        drain_reason: event.drain_reason
+      } results {
+        applied as MilestoneDrainApplied
+        rejected as MilestoneDrainRejected
+        failed as MilestoneDrainFailed
+      }
+  }
+
+  CLAIMED {
+    WorkStarted -> MONITORING
+      apply milestone.Start results {
+        applied as MilestoneStartApplied
+        rejected as MilestoneStartRejected
+        failed as MilestoneStartFailed
+      }
+    DrainMilestone -> DRAINED
+      capture drain_reason
+      apply milestone.Drain with {
+        drain_reason: event.drain_reason
+      } results {
+        applied as MilestoneDrainApplied
+        rejected as MilestoneDrainRejected
+        failed as MilestoneDrainFailed
+      }
+  }
+
+  MONITORING {
+    WorkReady -> READY_TO_SHIP
+      apply milestone.Ready results {
+        applied as MilestoneReadyApplied
+        rejected as MilestoneReadyRejected
+        failed as MilestoneReadyFailed
+      }
+    DrainMilestone -> DRAINED
+      capture drain_reason
+      apply milestone.Drain with {
+        drain_reason: event.drain_reason
+      } results {
+        applied as MilestoneDrainApplied
+        rejected as MilestoneDrainRejected
+        failed as MilestoneDrainFailed
+      }
+  }
+
+  READY_TO_SHIP {
+    ShipMilestone -> SHIPPED
+      capture shipper_id
+      apply milestone.Ship with {
+        shipper_id: event.shipper_id
+      } results {
+        applied as MilestoneShipApplied
+        rejected as MilestoneShipRejected
+        failed as MilestoneShipFailed
+      }
+    ShipMilestoneWithGate -> GATED_POST_SHIP
+      capture shipper_id
+      capture gate_kind
+      capture gate_from
+      apply milestone.ShipWithGate with {
+        shipper_id: event.shipper_id,
+        gate_kind: event.gate_kind,
+        gate_from: event.gate_from,
+        gate_description: event.gate_description
+      } results {
+        applied as MilestoneShipWithGateApplied
+        rejected as MilestoneShipWithGateRejected
+        failed as MilestoneShipWithGateFailed
+      }
+    DrainMilestone -> DRAINED
+      capture drain_reason
+      apply milestone.Drain with {
+        drain_reason: event.drain_reason
+      } results {
+        applied as MilestoneDrainApplied
+        rejected as MilestoneDrainRejected
+        failed as MilestoneDrainFailed
+      }
+  }
+
+  GATED_POST_SHIP {
+    GateCleared -> SHIPPED
+      apply milestone.ClearGate results {
+        applied as MilestoneClearGateApplied
+        rejected as MilestoneClearGateRejected
+        failed as MilestoneClearGateFailed
+      }
+  }
+
+  terminal SHIPPED, DRAINED
+
+  test "techlead triages, carves, monitors, ships" {
+    given submit { feature_subject: "ship M-101 durability", techlead_id: "tl_alice" }
+    when CarveMilestone { milestone_id: "M-101", subject: "WAL impl", design_id: "d_1", design_ref: "/docs/design/d.md", carver_id: "tl_alice" }
+    when MilestoneClaimed { claimed_by_id: "dev_chris" }
+    when WorkStarted { }
+    when WorkReady { }
+    when ShipMilestone { shipper_id: "tl_alice" }
+    expect state == SHIPPED
+    expect data.milestone_id == "M-101"
+    expect data.shipper_id == "tl_alice"
+  }
+
+  test "techlead carves, ships with gate, gate cleared" {
+    given submit { feature_subject: "M-740 deliverable", techlead_id: "tl_alice" }
+    when CarveMilestone { milestone_id: "M-740", subject: "export", design_id: "d_2", design_ref: "/docs/design/m740.md", carver_id: "tl_alice" }
+    when MilestoneClaimed { claimed_by_id: "dev_chris" }
+    when WorkStarted { }
+    when WorkReady { }
+    when ShipMilestoneWithGate { shipper_id: "tl_alice", gate_kind: "external-deliverable", gate_from: "aequa", gate_description: "consumer .fuse" }
+    when GateCleared { }
+    expect state == SHIPPED
+    expect data.gate_kind == "external-deliverable"
+  }
+
+  test "techlead drains mid-flow after carve" {
+    given submit { feature_subject: "exploratory feature", techlead_id: "tl_alice" }
+    when CarveMilestone { milestone_id: "M-999", subject: "explore", design_id: "d_9", design_ref: "/docs/design/m999.md", carver_id: "tl_alice" }
+    when DrainMilestone { drain_reason: "scope no longer applies" }
+    expect state == DRAINED
+    expect data.drain_reason == "scope no longer applies"
+  }
+}

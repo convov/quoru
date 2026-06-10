@@ -1,0 +1,72 @@
+# design.fuse — Design entity for the eng pack.
+#
+# Drafted by the `architect` agent (eng.draft), approved by the
+# `approver` human (eng.approve-design). One of the three minimum
+# human touchpoints from docs/packs/eng.md: "bad design = expensive."
+#
+# Lifecycle: DRAFTED -> APPROVED -> SUPERSEDED. REJECTED is a side
+# terminal for designs the approver rejects.
+
+package quoru.packs.eng
+
+use std.entity v1
+
+extern entity Design v1 {
+  @order(design_id, state, subject, author_id, approver_id, approved_at)
+
+  data {
+    design_id: ID @key @display(name: "Design ID", format: "id", readonly) @group("identity")
+    state: String @state @display(name: "State", format: "machine_state", readonly) @group("status")
+    version: Int64 @version @display(name: "Version", readonly, derived) @group("internal")
+    subject: String @display(name: "Subject") @group("content")
+    draft_ref: String? @display(name: "Draft location", hint: "URL or repo path to the design draft") @group("content")
+    research_artifact_id: ID? @display(name: "Cites research", format: "id", readonly) @nav(view: "research-artifact.detail", label: "Research") @group("content")
+    strategy_decision_id: ID? @display(name: "Implements strategy", format: "id", readonly) @nav(view: "strategy-decision.detail", label: "Strategy") @group("content")
+    author_id: ID @display(name: "Author", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    approver_id: ID? @display(name: "Approver", format: "id", readonly) @nav(view: "actor.detail", label: "Actor") @group("attribution")
+    approval_rationale: String? @writable @display(name: "Approval rationale") @group("decision")
+    rejection_reason: String? @writable @display(name: "Rejection reason") @group("lifecycle")
+    superseded_by_id: ID? @display(name: "Superseded by", format: "id", readonly) @nav(view: "design.detail", label: "Design") @group("lifecycle")
+    drafted_at: Timestamp @display(name: "Drafted", format: "timestamp", readonly) @group("lifecycle")
+    approved_at: Timestamp? @display(name: "Approved", format: "timestamp", readonly) @group("lifecycle")
+    superseded_at: Timestamp? @display(name: "Superseded", format: "timestamp", readonly) @group("lifecycle")
+  }
+
+  DRAFTED {
+    Draft(design_id: ID, subject: String, draft_ref: String, author_id: ID) -> DRAFTED
+      writes {
+        design_id = design_id
+        subject = subject
+        draft_ref = draft_ref
+        author_id = author_id
+        state = "DRAFTED"
+        drafted_at = now()
+      }
+
+    Approve(approver_id: ID, approval_rationale: String) -> APPROVED
+      writes {
+        approver_id = approver_id
+        approval_rationale = approval_rationale
+        state = "APPROVED"
+        approved_at = now()
+      }
+
+    Reject(rejection_reason: String) -> REJECTED
+      writes {
+        rejection_reason = rejection_reason
+        state = "REJECTED"
+      }
+  }
+
+  APPROVED {
+    Supersede(superseded_by_id: ID) -> SUPERSEDED
+      writes {
+        superseded_by_id = superseded_by_id
+        state = "SUPERSEDED"
+        superseded_at = now()
+      }
+  }
+
+  SUPERSEDED { }
+  REJECTED { }
+}
