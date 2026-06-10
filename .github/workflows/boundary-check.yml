@@ -1,0 +1,39 @@
+name: Boundary check
+
+# Content boundary check: public-facing surfaces must not contain internal
+# strategy vocabulary (moat, GTM, pricing tier, etc.) or references to the
+# quoru-internal repo.
+#
+# Driven by ci/check-content-boundary.sh. Pure bash + git ls-files, no
+# toolchain install needed.
+
+on:
+  push:
+    paths:
+      - '**/*.md'
+      - '**/*.mdx'
+      - '**/*.rs'
+      - '**/*.fuse'
+      - '**/Cargo.toml'
+      - '.github/workflows/**'
+      - 'ci/check-content-boundary.sh'
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '**/*.mdx'
+      - '**/*.rs'
+      - '**/*.fuse'
+      - '**/Cargo.toml'
+      - '.github/workflows/**'
+      - 'ci/check-content-boundary.sh'
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run content boundary check
+        run: bash ci/check-content-boundary.sh
